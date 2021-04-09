@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 import uproot3 as uproot
-import awkward0 as awkward
 import argparse
 import configparser
 import ast
