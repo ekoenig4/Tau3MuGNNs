@@ -1,7 +1,7 @@
 # GNNforTau3Mu
 Application of Graph Neural Networks to the study of the tau->3mu signature at the HL-LHC
 
-##To get the repository code:
+## To get the repository code:
 ```
 git clone https://github.com/cms-p2l1trigger-tau3mu/Tau3MuGNNs 
 ````
@@ -10,7 +10,9 @@ git clone https://github.com/cms-p2l1trigger-tau3mu/Tau3MuGNNs
 The first script reads the simulation root files and covert them into NumPy array and save them as a pickle file (*.pkl). This script was tested in Python3 using the following dependencies:
 
 -uproot3, 3.14.4
+
 -numpy, 1.15.4
+
 -pandas, 0.24.2
 
 To install these dependencies (if needed)
