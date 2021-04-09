@@ -1,2 +1,2 @@
 # GNNforTau3Mu
-Graph Neural Networks applications to study the tau->3mu signature
+Application of Graph Neural Networks to the study of the tau->3mu signature at the HL-LHC
