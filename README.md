@@ -1,7 +1,7 @@
-# GNNforTau3Mu
-Application of Graph Neural Networks to the study of the tau->3mu signature at the HL-LHC
+# Tau3MuGNNs
+Application of Graph Neural Networks to the study of the tau->3mu signature at the HL-LHC CMS L1 Trigger
 
-## To get the repository code:
+## Install
 ```
 git clone https://github.com/cms-p2l1trigger-tau3mu/Tau3MuGNNs 
 ````
