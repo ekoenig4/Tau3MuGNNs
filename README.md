@@ -18,7 +18,7 @@ The first script reads the simulation root files and covert them into NumPy arra
 To install these dependencies (if needed)
 
 ```
-pip3 install --user uproot3 pandas numpy awkward0
+pip3 install --user uproot3 pandas numpy
 ````
 
 First, we should locate the ROOT files (DsTau3muPU0_Private.root,DsTau3muPU200_MTD.root,MinBiasPU200_MTD.root) in the input folder myrootfiles. Then, one run the script ProcessROOTFiles.py using the below instruction, where processing.cfg defines the configuration of the script (e.g. samples, variables, etc). The outputfiles will be stored as *.pkl files in the outputfolder myoutputfiles.
