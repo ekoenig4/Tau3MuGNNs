@@ -23,7 +23,7 @@ def ProcessingROOTFile(samplename,variables,inputdirectory,outputdirectory,is_si
     
     #transform file into a pandas dataframe
     print("\n... Processing file using pandas")
-    unfiltered_events_df   = events.pandas.df(variables, entrystop=maxevts,flatten=False)
+    unfiltered_events_df   = events.pandas.df(variables, entrystop=int(maxevts),flatten=False)
 
     #filter (if needed). For example: tau multiplicty(say exactly 1) and hit multiplicity(say >=3)
     if is_signal:
