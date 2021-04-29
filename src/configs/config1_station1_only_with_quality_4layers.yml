@@ -1,0 +1,48 @@
+data:
+  data_dir: ../data
+  log_dir: ../logs
+  src_dir: ./
+  train_with_noise: True
+  add_self_loops: True
+  virtual_node: True
+  only_one_tau: True
+  splits:
+    train: 0.7
+    valid: 0.15
+    test: 0.15
+  random_state: 1
+
+  conditions:
+    mu_hit_station: '==1'
+    n_mu_hit: '>= 3'
+
+  node_feature_names:
+    - mu_hit_ring
+    - mu_hit_quality
+    - mu_hit_bend
+    - mu_hit_sim_phi
+    - mu_hit_sim_theta
+    - mu_hit_sim_eta
+    - mu_hit_sim_r
+    - mu_hit_sim_z
+  edge_feature_names:
+    - mu_hit_sim_phi
+    - mu_hit_sim_theta
+    - mu_hit_sim_eta
+    - mu_hit_sim_r
+    - mu_hit_sim_z
+
+model:
+  epochs: 100
+  batch_size: 256
+  n_layers: 4
+  heads: 3
+  out_channels: 128
+  model_name: RelationalGAT
+  dropout: False
+  lr: 4e-4
+  scheduler: False
+
+eval:
+  thres: 0.5
+  test_interval: 10
