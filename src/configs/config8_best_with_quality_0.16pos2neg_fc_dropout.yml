@@ -10,11 +10,12 @@ data:
     train: 0.7
     valid: 0.15
     test: 0.15
+  pos2neg: 0.16
   random_state: 1
 
   conditions:
-    mu_hit_station: '==1'
     n_mu_hit: '>= 3'
+
 
   node_feature_names:
     - mu_hit_ring
@@ -33,13 +34,14 @@ data:
     - mu_hit_sim_z
 
 model:
-  epochs: 100
+  focal_loss: True
+  epochs: 150
   batch_size: 256
-  n_layers: 4
+  n_layers: 16
   heads: 3
   out_channels: 128
   model_name: RelationalGAT
-  dropout: False
+  dropout: True
   lr: 4e-4
   scheduler: False
 

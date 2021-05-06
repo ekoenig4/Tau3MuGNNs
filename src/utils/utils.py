@@ -19,6 +19,7 @@ from sklearn import metrics
 from sklearn.utils import check_matplotlib_support
 
 import torch
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.tensorboard.summary import hparams
 
@@ -91,6 +92,7 @@ def log_batch(logits, targets, thres, loss, phase, epoch, step, writer, lr):
     return desc
 
 
+# TODO: add_pr_curve will only update after testing the model
 def log_epoch(logits, targets, thres, criterion, writer, phase, epoch):
     preds = logits > thres
 
@@ -106,16 +108,30 @@ def log_epoch(logits, targets, thres, criterion, writer, phase, epoch):
     writer.add_pr_curve(f'PR_Curve/{phase}', targets, logits, epoch)
     writer.add_roc_curve(f'ROC_Curve/{phase}', targets, logits, epoch)
 
-    fpr, tpr, _ = metrics.roc_curve(targets, logits, pos_label=1)
-    fig = PlotROC(fpr=fpr, tpr=tpr, roc_auc=auroc, pos_label=1).plot().figure_
-    writer.add_figure(f'ROC/{phase}', fig, epoch)
-
     cm = metrics.confusion_matrix(targets, preds, normalize=None)
     fig = PlotCM(confusion_matrix=cm, display_labels=['Neg', 'Pos']).plot(cmap=plt.cm.Blues).figure_
     writer.add_figure(f'Confusion Matrix/{phase}', fig, epoch)
 
     desc = f'[Epoch: {epoch}]: {phase} finished, loss: {loss: .3f}, acc: {acc: .3f}, auprc: {auprc: .3f}, auroc: {auroc: .3f}'
     return desc, loss, acc, auprc, auroc
+
+
+def focal_loss(inputs, targets, alpha: float = 0.25, gamma: float = 2, reduction: str = "mean"):
+
+    ce_loss = F.binary_cross_entropy(inputs, targets, reduction="none")
+    p_t = inputs * targets + (1 - inputs) * (1 - targets)
+    loss = ce_loss * ((1 - p_t) ** gamma)
+
+    if alpha >= 0:
+        alpha_t = alpha * targets + (1 - alpha) * (1 - targets)
+        loss = alpha_t * loss
+
+    if reduction == "mean":
+        loss = loss.mean()
+    elif reduction == "sum":
+        loss = loss.sum()
+
+    return loss
 
 
 class Writer(SummaryWriter):

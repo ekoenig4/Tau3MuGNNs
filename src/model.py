@@ -101,7 +101,7 @@ class Model(nn.Module):
                                          concat=False)
         elif model_name == 'RelationalGAT':
             conv_layer = RelationalGAT.RelationalGATConv(self.out_channels, self.out_channels, self.heads,
-                                                         self.virtual_node)
+                                                         self.virtual_node, self.do_dropout)
         else:
             raise NotImplementedError
         return conv_layer

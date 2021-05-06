@@ -99,7 +99,7 @@ def main(config, feature_name):
     else:
         scheduler = None
 
-    criterion = torch.nn.BCELoss()
+    criterion = utils.focal_loss if config['model']['focal_loss'] else torch.nn.BCELoss()
 
     writer = utils.Writer(log_path)
     res = {'train_res': [], 'valid_res': [], 'test_res': []}

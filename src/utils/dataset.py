@@ -35,6 +35,7 @@ class Tau3MuDataset(InMemoryDataset):
         self.virtual_node = config['virtual_node']
         self.only_one_tau = config['only_one_tau']
         self.splits = config['splits']
+        self.pos2neg = config['pos2neg']
         self.random_state = config['random_state']
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
@@ -96,7 +97,7 @@ class Tau3MuDataset(InMemoryDataset):
                                   virtual_edge_features=virtual_edge_features))
 
         data, slices = self.collate(data_list)
-        idx_split = Tau3MuDataset.get_idx_split(data, self.splits, self.random_state)
+        idx_split = Tau3MuDataset.get_idx_split(data, self.splits, self.pos2neg, self.random_state)
 
         print('[INFO] Saving data.pt...')
         torch.save((data, slices, idx_split), self.processed_paths[0])
@@ -120,23 +121,30 @@ class Tau3MuDataset(InMemoryDataset):
         return entry
 
     @staticmethod
-    def get_idx_split(data, splits: dict, random_state) -> dict:
+    def get_idx_split(data, splits: dict, pos2neg: float, random_state: int) -> dict:
         assert sum(splits.values()) == 1.0
 
         pos_idx = np.argwhere(data.y.reshape(-1).numpy() == 1).reshape(-1)
         neg_idx = np.argwhere(data.y.reshape(-1).numpy() == 0).reshape(-1)
+        assert len(pos_idx) < len(neg_idx)
+        assert len(pos_idx) <= len(neg_idx) * pos2neg
 
         np.random.seed(random_state)
         np.random.shuffle(pos_idx)
         np.random.shuffle(neg_idx)
 
-        i = int(splits['train'] * len(pos_idx))
-        j = int(splits['valid'] * len(pos_idx))
+        n_train_pos, n_valid_pos = int(splits['train'] * len(pos_idx)), int(splits['valid'] * len(pos_idx))
+        n_train_neg, n_valid_neg = int(n_train_pos / pos2neg), int(n_valid_pos / pos2neg)
 
-        # len(pos_train_idx) : len(neg_train_idx) = len(pos_valid_idx) : len(neg_valid_idx) = 1 : 1
+        # len(pos_train_idx) : len(neg_train_idx) = len(pos_valid_idx) : len(neg_valid_idx) = pos2neg
         # len(pos_test_idx) << len(neg_test_idx)
-        pos_train_idx, pos_valid_idx, pos_test_idx = pos_idx[0:i], pos_idx[i:i + j], pos_idx[i + j:-1]
-        neg_train_idx, neg_valid_idx, neg_test_idx = neg_idx[0:i], neg_idx[i:i + j], neg_idx[i + j:-1]
+        pos_train_idx = pos_idx[0:n_train_pos]
+        pos_valid_idx = pos_idx[n_train_pos:n_train_pos + n_valid_pos]
+        pos_test_idx = pos_idx[n_train_pos + n_valid_pos:-1]
+
+        neg_train_idx = neg_idx[0:n_train_neg]
+        neg_valid_idx = neg_idx[n_train_neg:n_train_neg + n_valid_neg]
+        neg_test_idx = neg_idx[n_train_neg + n_valid_neg:-1]
 
         return {'train': np.concatenate((pos_train_idx, neg_train_idx)).tolist(),
                 'valid': np.concatenate((pos_valid_idx, neg_valid_idx)).tolist(),
