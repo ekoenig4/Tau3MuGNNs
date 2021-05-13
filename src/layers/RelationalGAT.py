@@ -67,9 +67,11 @@ class RelationalGATConv(MessagePassing):
         alpha_l_virtual = (x * self.att_l_virtual).sum(dim=-1)  # N x H
         alpha_r_virtual = (x * self.att_r_virtual).sum(dim=-1)  # N x H
 
-        intra_level_out = self.propagate(intra_level_edge_index, x=x,
-                                         alpha=(alpha_l_intra, alpha_r_intra),
-                                         edge_emb=intra_level_edge_emb)  # N x H x C
+        intra_level_out = x
+        if intra_level_edge_index.shape[1] != 0:
+            intra_level_out = self.propagate(intra_level_edge_index, x=x,
+                                             alpha=(alpha_l_intra, alpha_r_intra),
+                                             edge_emb=intra_level_edge_emb)  # N x H x C
 
         if self.virtual_node:
             index = torch.cat((inter_level_edge_index, virtual_edge_index), dim=1)
@@ -79,9 +81,11 @@ class RelationalGATConv(MessagePassing):
                                  alpha=(alpha_l_virtual, alpha_r_virtual),
                                  edge_emb=emb)  # N x H x C
         else:
-            out = self.propagate(inter_level_edge_index, x=intra_level_out,
-                                 alpha=(alpha_l_inter, alpha_r_inter),
-                                 edge_emb=inter_level_edge_emb)  # N x H x C
+            out = intra_level_out
+            if inter_level_edge_index.shape[1] != 0:
+                out = self.propagate(inter_level_edge_index, x=intra_level_out,
+                                     alpha=(alpha_l_inter, alpha_r_inter),
+                                     edge_emb=inter_level_edge_emb)  # N x H x C
 
         out = self.downsample_out(out.view(-1, self.heads * self.out_channels))  # N x (HxC) -> N x C
         return out  # N x C

@@ -12,6 +12,7 @@ data:
     test: 0.15
   pos2neg: 0.16
   random_state: 1
+  mix_samples: False
 
   conditions:
     mu_hit_station: '==1'
@@ -35,7 +36,12 @@ data:
 
 model:
   focal_loss: True
-  epochs: 150
+  att_sup: False
+  att_unsup: False
+  att_sup_min_score: 0.05
+  att_sup_beta: 0.1
+  readout: rnn
+  epochs: 1
   batch_size: 256
   n_layers: 16
   heads: 3
@@ -44,6 +50,8 @@ model:
   dropout: True
   lr: 4e-4
   scheduler: False
+  resume: False
+  only_eval: False
 
 eval:
   thres: 0.5

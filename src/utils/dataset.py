@@ -37,6 +37,10 @@ class Tau3MuDataset(InMemoryDataset):
         self.splits = config['splits']
         self.pos2neg = config['pos2neg']
         self.random_state = config['random_state']
+        self.mix_samples = config['mix_samples']
+
+        if self.mix_samples:
+            assert self.splits['test'] == 0
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
         self.data, self.slices, self.idx_split = torch.load(self.processed_paths[0])
@@ -65,17 +69,24 @@ class Tau3MuDataset(InMemoryDataset):
 
     def process(self):
         dfs = Root2Df(self.data_dir / 'raw').read_df()
-        df = self.add_labels_and_merge_dfs(dfs, self.train_with_noise, self.only_one_tau)
 
-        data_list = []
+        if self.mix_samples:
+            df = Tau3MuDataset.get_mixed_df(dfs, self.only_one_tau, self.random_state)
+        else:
+            df = Tau3MuDataset.add_labels_and_merge_dfs(dfs, self.train_with_noise, self.only_one_tau)
+        del dfs
+
+        data_list, y_dist = [], []
+        print('[INFO] Processing entries...')
         for idx, entry in tqdm(df.iterrows(), total=len(df)):
 
             entry = Tau3MuDataset.filter_hits(entry, self.conditions)
             if entry is None:
                 continue
 
-            x = self.get_node_features(entry, self.node_feature_names, self.virtual_node)
-            y = torch.tensor(entry.y, dtype=torch.float).view(-1, 1)
+            x, score_gt = self.get_node_features(entry, self.node_feature_names, self.virtual_node, self.mix_samples)
+            y_dist.append(entry.y)
+            y = torch.tensor(0 if entry.y == 0 else 1, dtype=torch.float).view(-1, 1)
 
             intra_level_edges, inter_level_edges, virtual_edges = self.build_graph(entry, self.add_self_loops)
 
@@ -95,9 +106,13 @@ class Tau3MuDataset(InMemoryDataset):
                                   intra_level_edge_features=intra_level_edge_features,
                                   inter_level_edge_features=inter_level_edge_features,
                                   virtual_edge_features=virtual_edge_features))
-
         data, slices = self.collate(data_list)
-        idx_split = Tau3MuDataset.get_idx_split(data, self.splits, self.pos2neg, self.random_state)
+        del data_list, df
+
+        if self.mix_samples:
+            idx_split = Tau3MuDataset.get_mixed_idx_split(np.array(y_dist), self.splits, self.pos2neg, self.random_state)
+        else:
+            idx_split = Tau3MuDataset.get_idx_split(np.array(y_dist), self.splits, self.pos2neg, self.random_state)
 
         print('[INFO] Saving data.pt...')
         torch.save((data, slices, idx_split), self.processed_paths[0])
@@ -121,11 +136,11 @@ class Tau3MuDataset(InMemoryDataset):
         return entry
 
     @staticmethod
-    def get_idx_split(data, splits: dict, pos2neg: float, random_state: int) -> dict:
+    def get_idx_split(y_dist, splits: dict, pos2neg: float, random_state: int) -> dict:
         assert sum(splits.values()) == 1.0
 
-        pos_idx = np.argwhere(data.y.reshape(-1).numpy() == 1).reshape(-1)
-        neg_idx = np.argwhere(data.y.reshape(-1).numpy() == 0).reshape(-1)
+        pos_idx = np.argwhere(y_dist == 1).reshape(-1)
+        neg_idx = np.argwhere(y_dist == 0).reshape(-1)
         assert len(pos_idx) < len(neg_idx)
         assert len(pos_idx) <= len(neg_idx) * pos2neg
 
@@ -161,7 +176,7 @@ class Tau3MuDataset(InMemoryDataset):
         neg['y'] = 0
         pos['y'] = 1
         if only_one_tau:
-            pos = pos[pos.n_gen_tau == 1]
+            pos = pos[pos.n_gen_tau == 1].reset_index(drop=True)
 
         return pd.concat((pos, neg), join='inner', ignore_index=True)
 
@@ -197,12 +212,21 @@ class Tau3MuDataset(InMemoryDataset):
         return list(product([virtual_node_id], real_node_ids)) + list(product(real_node_ids, [virtual_node_id]))
 
     @staticmethod
-    def get_node_features(entry: pd.Series, feature_names: List[str], virtual_node: bool) -> Tensor:
+    def get_node_features(entry: pd.Series, feature_names: List[str], virtual_node: bool, mix_samples: bool) -> Tuple:
         # one-hot encoding for station ids? Perhaps the order of the station matters.
         features = np.stack([entry[feature] for feature in feature_names], axis=1)
         if virtual_node:
             features = np.concatenate((features, np.zeros((1, len(feature_names)))))
-        return torch.tensor(features, dtype=torch.float)
+
+        score_gt = torch.tensor([], dtype=torch.float)
+        if mix_samples and entry['score_gt'] is not None:
+            if virtual_node:
+                entry['score_gt'] = np.concatenate((entry['score_gt'], [1]))
+            # TODO: when there is no virtual node, the denominator will be zero.
+            assert virtual_node
+            score_gt = torch.tensor(entry['score_gt'] / entry['score_gt'].sum(), dtype=torch.float)
+
+        return torch.tensor(features, dtype=torch.float), score_gt
 
     @staticmethod
     def get_edge_features(entry: pd.Series, edges: Tensor, feature_names: List[str], for_virtual_edges: bool) -> Tensor:
@@ -266,3 +290,67 @@ class Tau3MuDataset(InMemoryDataset):
             m.update(key.encode('utf-8'))
             m.update(str(idx_split[key]).encode('utf-8'))
         return m.hexdigest()
+
+    def get_mixed_df(self, dfs):
+        neg = dfs['MinBiasPU200_MTD']
+        pos0 = dfs['DsTau3muPU0_Private']
+        pos200 = dfs['DsTau3muPU200_MTD']
+        pos0 = pos0[pos0['n_mu_hit'] >= 3].reset_index(drop=True)
+        pos200['score_gt'] = None
+
+        neg_idx = np.arange(len(neg))
+        np.random.seed(self.random_state)
+        np.random.shuffle(neg_idx)
+
+        noise_in_mixed_pos = neg.iloc[neg_idx[:len(pos0)]].reset_index(drop=True)
+        pure_neg = neg.iloc[neg_idx[len(pos0):]].reset_index(drop=True)
+        pure_neg['score_gt'] = pure_neg.apply(lambda x: np.zeros(x['n_mu_hit']), axis=1)
+
+        print('[INFO] Mixing data...')
+        mixed_pos = []
+        for idx, entry in tqdm(noise_in_mixed_pos.iterrows(), total=len(noise_in_mixed_pos)):
+            for k, v in entry.items():
+                if isinstance(v, int):
+                    assert k == 'n_mu_hit'
+                    entry[k] += pos0.iloc[idx][k]
+                    entry['score_gt'] = np.zeros(entry[k])
+                    entry['score_gt'][:pos0.iloc[idx][k]] = 1
+                else:
+                    assert isinstance(v, np.ndarray)
+                    entry[k] = np.concatenate((pos0.iloc[idx][k], v))
+            mixed_pos.append(entry.values)
+        mixed_pos = pd.DataFrame(data=mixed_pos, columns=entry.index)
+
+        mixed_pos['y'] = 1
+        pure_neg['y'] = 0
+        pos200['y'] = 2
+
+        return pd.concat((mixed_pos, pure_neg, pos200), join='inner', ignore_index=True)
+
+    @staticmethod
+    def get_mixed_idx_split(y_dist, splits: dict, pos2neg: float, random_state: int):
+        assert sum(splits.values()) == 1.0
+
+        mixed_pos_idx = np.argwhere(y_dist == 1).reshape(-1)
+        pure_neg_idx = np.argwhere(y_dist == 0).reshape(-1)
+        pos200_idx = np.argwhere(y_dist == 2).reshape(-1)
+
+        np.random.seed(random_state)
+        np.random.shuffle(mixed_pos_idx)
+        np.random.shuffle(pure_neg_idx)
+        np.random.shuffle(pos200_idx)
+
+        n_train_pos, n_valid_pos = int(splits['train'] * len(mixed_pos_idx)), int(splits['valid'] * len(mixed_pos_idx))
+        n_train_neg, n_valid_neg = int(n_train_pos / pos2neg), int(n_valid_pos / pos2neg)
+
+        pos_train_idx = mixed_pos_idx[0:n_train_pos]
+        pos_valid_idx = mixed_pos_idx[n_train_pos:]
+        pos_test_idx = pos200_idx
+
+        neg_train_idx = pure_neg_idx[0:n_train_neg]
+        neg_valid_idx = pure_neg_idx[n_train_neg:n_train_neg + n_valid_neg]
+        neg_test_idx = pure_neg_idx[n_train_neg + n_valid_neg:]
+
+        return {'train': np.concatenate((pos_train_idx, neg_train_idx)).tolist(),
+                'valid': np.concatenate((pos_valid_idx, neg_valid_idx)).tolist(),
+                'test': np.concatenate((pos_test_idx, neg_test_idx)).tolist()}

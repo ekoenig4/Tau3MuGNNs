@@ -57,12 +57,12 @@ def print_splits_and_acc_lower_bound(dataset):
 def get_best_res(res):
     best_res = {}
 
-    max_auprc_epoch = np.argmax(np.array(res['valid_res'])[:, 2])
+    max_auroc_epoch = np.argmax(np.array(res['valid_res'])[:, 3])
     for phase, scores in res.items():
-        best_res[f'Hparams/{phase}/loss'] = np.array(scores)[:, 0][max_auprc_epoch]
-        best_res[f'Hparams/{phase}/accuracy'] = np.array(scores)[:, 1][max_auprc_epoch]
-        best_res[f'Hparams/{phase}/auprc'] = np.array(scores)[:, 2][max_auprc_epoch]
-        best_res[f'Hparams/{phase}/auroc'] = np.array(scores)[:, 3][max_auprc_epoch]
+        best_res[f'Hparams/{phase}/loss'] = np.array(scores)[:, 0][max_auroc_epoch]
+        best_res[f'Hparams/{phase}/accuracy'] = np.array(scores)[:, 1][max_auroc_epoch]
+        best_res[f'Hparams/{phase}/auprc'] = np.array(scores)[:, 2][max_auroc_epoch]
+        best_res[f'Hparams/{phase}/auroc'] = np.array(scores)[:, 3][max_auroc_epoch]
 
     return best_res
 
@@ -79,29 +79,42 @@ def get_data_config_of_interest(config):
     return interested_config
 
 
-def log_batch(logits, targets, thres, loss, phase, epoch, step, writer, lr):
+def log_batch(logits, targets, thres, loss, ce_loss, kl_loss, phase, epoch, step, writer, lr):
+    kl_loss = 9.999 if kl_loss is None else kl_loss
     acc = ((logits > thres) == targets).sum() / targets.shape[0]
 
     writer.add_scalar(f'Batch/{phase}/loss', loss, step)
     writer.add_scalar(f'Batch/{phase}/accuracy', acc, step)
+    writer.add_scalar(f'Batch/{phase}/ce_loss', ce_loss, step)
+    writer.add_scalar(f'Batch/{phase}/kl_loss', kl_loss, step)
 
     if lr is not None and phase == 'train':
         writer.add_scalar(f'Stats/lr_schedule', lr, step)
 
-    desc = f'[Epoch: {epoch}]: {phase}........., loss: {loss: .3f}, acc: {acc: .3f}..............................'
+    desc = f'[Epoch: {epoch}]: {phase}........., loss: {loss: .3f}, ce_loss: {ce_loss: .3f}, kl_loss: {kl_loss: .3f}, ' \
+           f'acc: {acc: .3f}..............................'
     return desc
 
 
 # TODO: add_pr_curve will only update after testing the model
-def log_epoch(logits, targets, thres, criterion, writer, phase, epoch):
+def log_epoch(logits, targets, kl_loss, thres, criterion, writer, phase, epoch):
     preds = logits > thres
 
-    loss = criterion(logits, targets).item()
+    ce_loss = criterion(logits, targets).item()
+    if kl_loss is not None:
+        kl_loss = kl_loss.mean()
+        loss = ce_loss + kl_loss
+    else:
+        kl_loss = 9.999
+        loss = ce_loss
+
     acc = ((preds == targets).sum() / targets.shape[0]).item()
     auprc = metrics.average_precision_score(targets, logits, pos_label=1)
     auroc = metrics.roc_auc_score(targets, logits)
 
     writer.add_scalar(f'Epoch/{phase}/loss', loss, epoch)
+    writer.add_scalar(f'Epoch/{phase}/ce_loss', ce_loss, epoch)
+    writer.add_scalar(f'Epoch/{phase}/kl_loss', kl_loss, epoch)
     writer.add_scalar(f'Epoch/{phase}/accuracy', acc, epoch)
     writer.add_scalar(f'Epoch/{phase}/AUPRC/', auprc, epoch)
     writer.add_scalar(f'Epoch/{phase}/AUROC/', auroc, epoch)
@@ -112,7 +125,8 @@ def log_epoch(logits, targets, thres, criterion, writer, phase, epoch):
     fig = PlotCM(confusion_matrix=cm, display_labels=['Neg', 'Pos']).plot(cmap=plt.cm.Blues).figure_
     writer.add_figure(f'Confusion Matrix/{phase}', fig, epoch)
 
-    desc = f'[Epoch: {epoch}]: {phase} finished, loss: {loss: .3f}, acc: {acc: .3f}, auprc: {auprc: .3f}, auroc: {auroc: .3f}'
+    desc = f'[Epoch: {epoch}]: {phase} finished, loss: {loss: .3f}, ce_loss: {ce_loss: .3f}, kl_loss: {kl_loss: .3f}, ' \
+           f'acc: {acc: .3f}, auprc: {auprc: .3f}, auroc: {auroc: .3f}'
     return desc, loss, acc, auprc, auroc
 
 
