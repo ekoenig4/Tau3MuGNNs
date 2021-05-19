@@ -1,0 +1,62 @@
+data:
+  data_dir: ../data
+  log_dir: ../logs
+  src_dir: ./
+  train_with_noise: True
+  add_self_loops: True
+  virtual_node: True
+  only_one_tau: True
+  splits:
+    train: 0.7
+    valid: 0.15
+    test: 0.15
+  pos2neg: 0.16
+  random_state: 1
+  mix_samples: False
+
+  conditions:
+    mu_hit_station: '==1'
+    n_mu_hit: '>= 3'
+
+  node_feature_names:
+    - mu_hit_ring
+    - mu_hit_quality
+    - mu_hit_bend
+    - mu_hit_sim_phi
+    - mu_hit_sim_theta
+    - mu_hit_sim_eta
+    - mu_hit_sim_r
+    - mu_hit_sim_z
+  edge_feature_names:
+    - mu_hit_sim_phi
+    - mu_hit_sim_theta
+    - mu_hit_sim_eta
+    - mu_hit_sim_r
+    - mu_hit_sim_z
+
+model:
+  focal_loss: True
+  focal_alpha: 0.5
+  focal_gamma: 3
+  att_sup: False
+  att_unsup: False
+  pred_pt: False
+  epochs: 250
+  batch_size: 256
+  lr: 4e-4
+  n_layers: 16
+  heads: 3
+  out_channels: 128
+  resume: False
+  model_name: RelationalGAT
+  readout: rnn
+  dropout: True
+  scheduler: False
+  only_eval: False
+  att_sup_min_score: 0.05
+  kl_beta: 0.1
+  rmse_beta: 1
+
+eval:
+  test_interval: 10
+  auroc_max_fpr: 0.001

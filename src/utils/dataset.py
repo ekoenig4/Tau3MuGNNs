@@ -99,7 +99,7 @@ class Tau3MuDataset(InMemoryDataset):
             if not self.virtual_node:
                 virtual_edge_features = virtual_edges = torch.tensor([], dtype=torch.long)
 
-            data_list.append(Data(x=x, y=y, num_nodes=x.shape[0],
+            data_list.append(Data(x=x, y=y, num_nodes=x.shape[0], score_gt=score_gt,
                                   intra_level_edge_index=intra_level_edges,
                                   inter_level_edge_index=inter_level_edges,
                                   virtual_edge_index=virtual_edges,
@@ -117,7 +117,7 @@ class Tau3MuDataset(InMemoryDataset):
         print('[INFO] Saving data.pt...')
         torch.save((data, slices, idx_split), self.processed_paths[0])
         yaml.dump(self.config, open(Path(self.processed_dir) / 'data_config.yml', 'w'))
-        (Path(self.processed_dir) / 'data_md5.txt').open('w').write(Tau3MuDataset.md5sum(data, slices, idx_split))
+        (Path(self.processed_dir) / 'data_md5.txt').open('w').write(Tau3MuDataset.md5sum(data, slices, idx_split, True))
 
     @staticmethod
     def filter_hits(entry: pd.Series, conditions: dict) -> Union[pd.Series, None]:
@@ -155,11 +155,11 @@ class Tau3MuDataset(InMemoryDataset):
         # len(pos_test_idx) << len(neg_test_idx)
         pos_train_idx = pos_idx[0:n_train_pos]
         pos_valid_idx = pos_idx[n_train_pos:n_train_pos + n_valid_pos]
-        pos_test_idx = pos_idx[n_train_pos + n_valid_pos:-1]
+        pos_test_idx = pos_idx[n_train_pos + n_valid_pos:]
 
         neg_train_idx = neg_idx[0:n_train_neg]
         neg_valid_idx = neg_idx[n_train_neg:n_train_neg + n_valid_neg]
-        neg_test_idx = neg_idx[n_train_neg + n_valid_neg:-1]
+        neg_test_idx = neg_idx[n_train_neg + n_valid_neg:]
 
         return {'train': np.concatenate((pos_train_idx, neg_train_idx)).tolist(),
                 'valid': np.concatenate((pos_valid_idx, neg_valid_idx)).tolist(),
@@ -275,7 +275,7 @@ class Tau3MuDataset(InMemoryDataset):
         return all_level_edges
 
     @staticmethod
-    def md5sum(data, slices, idx_split):
+    def md5sum(data, slices, idx_split, print_md5):
         m = hashlib.md5()
         for key in data.keys:
             assert isinstance(data[key], Tensor)
@@ -289,17 +289,25 @@ class Tau3MuDataset(InMemoryDataset):
             assert isinstance(idx_split[key], List)
             m.update(key.encode('utf-8'))
             m.update(str(idx_split[key]).encode('utf-8'))
-        return m.hexdigest()
+        md5 = m.hexdigest()
+        if print_md5:
+            print(f'[INFO] Data md5: {md5}')
+        return md5
 
-    def get_mixed_df(self, dfs):
+    @staticmethod
+    def get_mixed_df(dfs, only_one_tau, random_state):
         neg = dfs['MinBiasPU200_MTD']
         pos0 = dfs['DsTau3muPU0_Private']
         pos200 = dfs['DsTau3muPU200_MTD']
         pos0 = pos0[pos0['n_mu_hit'] >= 3].reset_index(drop=True)
         pos200['score_gt'] = None
 
+        if only_one_tau:
+            pos0 = pos0[pos0.n_gen_tau == 1].reset_index(drop=True)
+            pos200 = pos200[pos200.n_gen_tau == 1].reset_index(drop=True)
+
         neg_idx = np.arange(len(neg))
-        np.random.seed(self.random_state)
+        np.random.seed(random_state)
         np.random.shuffle(neg_idx)
 
         noise_in_mixed_pos = neg.iloc[neg_idx[:len(pos0)]].reset_index(drop=True)

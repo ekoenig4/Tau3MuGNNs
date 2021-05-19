@@ -8,8 +8,7 @@ Created on 2021/4/21
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch_scatter import scatter_max, scatter_sum
+from torch_scatter import scatter_max
 from torch_geometric.utils import softmax
 from torch_geometric.nn import GlobalAttention
 from torch_geometric.nn.conv import TransformerConv
@@ -19,19 +18,21 @@ from layers import PlainGAT, RelationalGAT
 
 
 class Model(nn.Module):
-    def __init__(self, x_dim, edge_attr_dim, virtual_node, config):
+    def __init__(self, x_dim, edge_attr_dim, model_config, data_config):
         super(Model, self).__init__()
         self.x_dim = x_dim
-        self.heads = config['heads']
-        self.out_channels = config['out_channels']
-        self.n_layers = config['n_layers']
-        self.model_name = config['model_name']
-        self.do_dropout = config['dropout']
-        self.readout = config['readout']
-        self.att_sup = config['att_sup']
-        self.att_sup_beta = config['att_sup_beta']
-        self.att_unsup = config['att_unsup']
-        self.virtual_node = virtual_node
+        self.heads = model_config['heads']
+        self.out_channels = model_config['out_channels']
+        self.n_layers = model_config['n_layers']
+        self.model_name = model_config['model_name']
+        self.do_dropout = model_config['dropout']
+        self.readout = model_config['readout']
+
+        self.att_sup = model_config['att_sup']
+        self.att_unsup = model_config['att_unsup']
+        self.pred_pt = model_config['pred_pt']
+
+        self.virtual_node = data_config['virtual_node']
         self.att_sup_layer = int(2/3 * self.n_layers)
 
         self.convs = nn.ModuleList()
@@ -47,9 +48,9 @@ class Model(nn.Module):
             self.bns.append(nn.BatchNorm1d(self.out_channels))
 
         if self.att_sup or self.att_unsup:
-            self.top_att = AttSup(self.out_channels, min_score=config['att_sup_min_score'])
+            self.top_att = AttSup(self.out_channels, min_score=model_config['att_sup_min_score'])
 
-        if virtual_node:
+        if self.virtual_node:
             if self.readout == 'rnn':
                 self.rnn = nn.LSTMCell(self.out_channels, self.out_channels)
             elif self.readout == 'jknet':
@@ -60,13 +61,16 @@ class Model(nn.Module):
             gate_nn = nn.Linear(self.out_channels, 1)
             self.pool = GlobalAttention(gate_nn)
 
-        self.fc_out = nn.Linear(self.out_channels, 1)
+        if self.pred_pt:
+            self.fc_out = nn.Linear(self.out_channels, 4)
+        else:
+            self.fc_out = nn.Linear(self.out_channels, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, data):
         x = self.node_encoder(data.x)
         v_idx, v_emb = (Model.get_virtual_node_idx(x, data), []) if self.virtual_node else (None, None)
-        kl_loss = None
+        score_pair = None
 
         if self.model_name in ['PlainGAT', 'UniMP']:
             edge_index = torch.cat((data.intra_level_edge_index, data.inter_level_edge_index, data.virtual_edge_index),
@@ -108,8 +112,7 @@ class Model(nn.Module):
                 x, edge_index, edge_emb, batch, perm, v_idx, score = self.top_att(x, edge_index, edge_emb,
                                                                                   data.batch, v_idx, data.num_nodes)
                 if self.att_sup and data.score_gt.shape[0] != 0:
-                    kl_loss = self.att_sup_beta * scatter_sum(F.kl_div(torch.log(score + 1e-14), data.score_gt,
-                                                                       reduction='none'), data.batch).mean()
+                    score_pair = [score, data.score_gt, data.batch]
                 identity = identity[perm]
                 data.batch = batch
 
@@ -124,7 +127,7 @@ class Model(nn.Module):
             pool_out = self.pool(x, data.batch)
 
         out = self.fc_out(pool_out)
-        return self.sigmoid(out), kl_loss
+        return self.sigmoid(out), score_pair
 
     def get_layer_by_name(self, model_name):
 
