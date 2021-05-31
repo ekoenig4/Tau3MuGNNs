@@ -25,22 +25,23 @@ class Main(object):
         self.config = config
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        dataset = Tau3MuDataset(config['data'])
-        logger.print_splits_and_acc_lower_bound(dataset)
-        md5 = dataset.md5sum(dataset.data, dataset.slices, dataset.idx_split, print_md5=True)
+        self.dataset = Tau3MuDataset(config['data'])
+        logger.print_splits_and_acc_lower_bound(self.dataset, config['data']['pred_pt'])
+        md5 = self.dataset.md5sum(self.dataset.data, self.dataset.slices, self.dataset.idx_split, print_md5=True)
 
-        self.log_path = logger.get_log_path_and_save_metadata(config, dataset.processed_dir, log_name)
-        self.writer = logger.Writer(self.log_path)
+        self.log_path = logger.get_log_path_and_save_metadata(config, self.dataset.processed_dir, log_name)
+        if __name__ == '__main__':
+            self.writer = logger.Writer(self.log_path)
 
         self.auroc_max_fpr, self.test_interval = config['eval']['auroc_max_fpr'], config['eval']['test_interval']
         self.batch_size, self.only_eval = config['model']['batch_size'], config['model']['only_eval']
         self.start_epoch, self.resume, self.epochs = 0, config['model']['resume'], config['model']['epochs']
 
-        self.train_loader = DataLoader(dataset[dataset.idx_split['train']], batch_size=self.batch_size, shuffle=True)
-        self.valid_loader = DataLoader(dataset[dataset.idx_split['valid']], batch_size=self.batch_size, shuffle=False)
-        self.test_loader = DataLoader(dataset[dataset.idx_split['test']], batch_size=self.batch_size, shuffle=False)
+        self.train_loader = DataLoader(self.dataset[self.dataset.idx_split['train']], batch_size=self.batch_size, shuffle=True)
+        self.valid_loader = DataLoader(self.dataset[self.dataset.idx_split['valid']], batch_size=self.batch_size, shuffle=False)
+        self.test_loader = DataLoader(self.dataset[self.dataset.idx_split['test']], batch_size=self.batch_size, shuffle=False)
 
-        self.model = Model(dataset.x_dim, dataset.edge_attr_dim, config['model'], config['data']).to(self.device)
+        self.model = Model(self.dataset.x_dim, self.dataset.edge_attr_dim, config['model'], config['data']).to(self.device)
         num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         self.hparams = {**config['model'], **logger.log_data_config(config['data']), 'md5': md5, 'num_params': num_params}
         print(f'[INFO] Number of trainable parameters: {num_params}')
@@ -80,16 +81,16 @@ class Main(object):
     def eval_one_batch(self, data):
         self.model.eval()
 
-        probs, score_pair = self.model(data)
-        loss, loss_dict = self.criterion(probs, data.y, kl_pairs=score_pair)
-        return loss_dict, probs.data.cpu(), data.y.data.cpu(), None
+        probs, score_pair, pt_pair = self.model(data)
+        loss, loss_dict = self.criterion(probs, data.y[:, [0]], kl_pairs=score_pair, pt_pairs=pt_pair)
+        return loss_dict, probs.data.cpu(), data.y[:, [0]].data.cpu(), None
 
     def train_one_batch(self, data):
         self.model.train()
         self.optimizer.zero_grad()
 
-        probs, score_pair = self.model(data)
-        loss, loss_dict = self.criterion(probs, data.y, kl_pairs=score_pair)
+        probs, score_pair, pt_pair = self.model(data)
+        loss, loss_dict = self.criterion(probs, data.y[:, [0]], kl_pairs=score_pair, pt_pairs=pt_pair)
 
         loss.backward()
         self.optimizer.step()
@@ -98,7 +99,7 @@ class Main(object):
             self.scheduler.step()
 
         lr = self.optimizer.param_groups[0]['lr']
-        return loss_dict, probs.data.cpu(), data.y.data.cpu(), lr
+        return loss_dict, probs.data.cpu(), data.y[:, [0]].data.cpu(), lr
 
     def load_checkpoint(self):
         print(f'[INFO] Loading checkpoint from {self.resume}')

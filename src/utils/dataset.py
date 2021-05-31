@@ -38,8 +38,12 @@ class Tau3MuDataset(InMemoryDataset):
         self.pos2neg = config['pos2neg']
         self.random_state = config['random_state']
         self.mix_samples = config['mix_samples']
+        self.mix_and_check = config['mix_and_check']
+        self.pred_pt = config['pred_pt']
+        self.visz = config['visz']
+        self.filter_soft_mu = config['filter_soft_mu']
 
-        if self.mix_samples:
+        if self.mix_samples and not self.mix_and_check:
             assert self.splits['test'] == 0
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
@@ -47,6 +51,7 @@ class Tau3MuDataset(InMemoryDataset):
         self.x_dim = self.data.x.shape[-1]
         self.edge_attr_dim = max(self.data.intra_level_edge_features.shape[-1],
                                  self.data.inter_level_edge_features.shape[-1])
+        self.all_entries = torch.load(Path(self.processed_dir) / 'all_entries.pt') if self.visz else None
 
     @property
     def raw_file_names(self):
@@ -71,31 +76,42 @@ class Tau3MuDataset(InMemoryDataset):
         dfs = Root2Df(self.data_dir / 'raw').read_df()
 
         if self.mix_samples:
-            df = Tau3MuDataset.get_mixed_df(dfs, self.only_one_tau, self.random_state)
+            df = Tau3MuDataset.get_mixed_df(dfs, self.only_one_tau, self.random_state, self.visz, self.filter_soft_mu)
         else:
-            df = Tau3MuDataset.add_labels_and_merge_dfs(dfs, self.train_with_noise, self.only_one_tau)
+            df = Tau3MuDataset.add_labels_and_merge_dfs(dfs, self.train_with_noise, self.only_one_tau, self.pred_pt, self.visz, self.filter_soft_mu)
         del dfs
 
         data_list, y_dist = [], []
+        all_entries = []
+        entry_index = None
         print('[INFO] Processing entries...')
         for idx, entry in tqdm(df.iterrows(), total=len(df)):
 
             entry = Tau3MuDataset.filter_hits(entry, self.conditions)
             if entry is None:
                 continue
+            elif self.visz:
+                all_entries.append(entry.values)
+                if entry_index is None:
+                    entry_index = entry.index
 
-            x, score_gt = self.get_node_features(entry, self.node_feature_names, self.virtual_node, self.mix_samples)
+            x, score_gt = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node, self.mix_samples)
             y_dist.append(entry.y)
-            y = torch.tensor(0 if entry.y == 0 else 1, dtype=torch.float).view(-1, 1)
+            if self.pred_pt:
+                y = torch.tensor(np.concatenate([[0 if entry.y == 0 else 1], entry.gen_mu_pt]), dtype=torch.float).view(-1, 4)
+            elif self.mix_and_check:
+                y = torch.tensor(1 if entry.y == 1 else 0, dtype=torch.float).view(-1, 1)
+            else:
+                y = torch.tensor(0 if entry.y == 0 else 1, dtype=torch.float).view(-1, 1)
 
-            intra_level_edges, inter_level_edges, virtual_edges = self.build_graph(entry, self.add_self_loops)
+            intra_level_edges, inter_level_edges, virtual_edges = Tau3MuDataset.build_graph(entry, self.add_self_loops)
 
-            intra_level_edge_features = self.get_edge_features(entry, intra_level_edges, self.edge_feature_names,
-                                                               for_virtual_edges=False)
-            inter_level_edge_features = self.get_edge_features(entry, inter_level_edges, self.edge_feature_names,
-                                                               for_virtual_edges=False)
-            virtual_edge_features = self.get_edge_features(entry, virtual_edges, self.edge_feature_names,
-                                                           for_virtual_edges=True)
+            intra_level_edge_features = Tau3MuDataset.get_edge_features(entry, intra_level_edges, self.edge_feature_names,
+                                                                        for_virtual_edges=False)
+            inter_level_edge_features = Tau3MuDataset.get_edge_features(entry, inter_level_edges, self.edge_feature_names,
+                                                                        for_virtual_edges=False)
+            virtual_edge_features = Tau3MuDataset.get_edge_features(entry, virtual_edges, self.edge_feature_names,
+                                                                    for_virtual_edges=True)
             if not self.virtual_node:
                 virtual_edge_features = virtual_edges = torch.tensor([], dtype=torch.long)
 
@@ -110,7 +126,7 @@ class Tau3MuDataset(InMemoryDataset):
         del data_list, df
 
         if self.mix_samples:
-            idx_split = Tau3MuDataset.get_mixed_idx_split(np.array(y_dist), self.splits, self.pos2neg, self.random_state)
+            idx_split = Tau3MuDataset.get_mixed_idx_split(np.array(y_dist), self.splits, self.pos2neg, self.random_state, self.mix_and_check)
         else:
             idx_split = Tau3MuDataset.get_idx_split(np.array(y_dist), self.splits, self.pos2neg, self.random_state)
 
@@ -119,17 +135,23 @@ class Tau3MuDataset(InMemoryDataset):
         yaml.dump(self.config, open(Path(self.processed_dir) / 'data_config.yml', 'w'))
         (Path(self.processed_dir) / 'data_md5.txt').open('w').write(Tau3MuDataset.md5sum(data, slices, idx_split, True))
 
+        if self.visz:
+            print('[INFO] Saving all_entries.pt...')
+            all_entries = pd.DataFrame(data=all_entries, columns=entry_index)
+            torch.save(all_entries, Path(self.processed_dir) / 'all_entries.pt')
+
     @staticmethod
     def filter_hits(entry: pd.Series, conditions: dict) -> Union[pd.Series, None]:
         for k, v in conditions.items():
+            k = k.split('-')[1]
             if isinstance(entry[k], np.ndarray):
                 mask = np.argwhere(eval('entry.' + k + v))
                 entry.n_mu_hit = mask.shape[0]
                 if entry.n_mu_hit == 0:
                     return None
-                for idx, each in enumerate(entry):
-                    if isinstance(each, np.ndarray):
-                        entry[idx] = each[mask].reshape(-1)
+                for key, value in entry.items():
+                    if isinstance(value, np.ndarray) and 'gen' not in key:
+                        entry[key] = value[mask].reshape(-1)
             else:
                 if not eval('entry.' + k + v):
                     return None
@@ -166,10 +188,14 @@ class Tau3MuDataset(InMemoryDataset):
                 'test': np.concatenate((pos_test_idx, neg_test_idx)).tolist()}
 
     @staticmethod
-    def add_labels_and_merge_dfs(dfs: dict, train_with_noise: bool, only_one_tau: bool) -> pd.DataFrame:
+    def add_labels_and_merge_dfs(dfs: dict, train_with_noise, only_one_tau, pred_pt, visz, filter_soft_mu) -> pd.DataFrame:
         neg = dfs['MinBiasPU200_MTD']
         pos0 = dfs['DsTau3muPU0_Private']
         pos200 = dfs['DsTau3muPU200_MTD']
+
+        if filter_soft_mu:
+            pos0 = pos0[pos0.apply(lambda x: Tau3MuDataset.filter_mu_by_pt_eta(x), axis=1)]
+            pos200 = pos200[pos200.apply(lambda x: Tau3MuDataset.filter_mu_by_pt_eta(x), axis=1)]
 
         pos = pos200 if train_with_noise else pos0
 
@@ -178,7 +204,17 @@ class Tau3MuDataset(InMemoryDataset):
         if only_one_tau:
             pos = pos[pos.n_gen_tau == 1].reset_index(drop=True)
 
-        return pd.concat((pos, neg), join='inner', ignore_index=True)
+        if pred_pt:
+            pos['gen_mu_pt'] = pos.apply(lambda x: np.sort(x['gen_mu_pt']), axis=1)
+            neg['gen_mu_pt'] = neg.apply(lambda x: np.full(3, -2), axis=1)
+
+        if visz:
+            assert train_with_noise and only_one_tau
+            pos0 = pos0[pos0.n_gen_tau == 1].reset_index(drop=True)
+            pos0['y'] = 2
+            return pd.concat((pos, neg, pos0), join='outer', ignore_index=True)
+        else:
+            return pd.concat((pos, neg), join='inner', ignore_index=True)
 
     @staticmethod
     def groupby_station(stations: np.ndarray) -> dict:
@@ -295,16 +331,19 @@ class Tau3MuDataset(InMemoryDataset):
         return md5
 
     @staticmethod
-    def get_mixed_df(dfs, only_one_tau, random_state):
+    def get_mixed_df(dfs, only_one_tau, random_state, visz, filter_soft_mu):
         neg = dfs['MinBiasPU200_MTD']
         pos0 = dfs['DsTau3muPU0_Private']
         pos200 = dfs['DsTau3muPU200_MTD']
-        pos0 = pos0[pos0['n_mu_hit'] >= 3].reset_index(drop=True)
         pos200['score_gt'] = None
 
         if only_one_tau:
             pos0 = pos0[pos0.n_gen_tau == 1].reset_index(drop=True)
             pos200 = pos200[pos200.n_gen_tau == 1].reset_index(drop=True)
+
+        if filter_soft_mu:
+            pos0 = pos0[pos0.apply(lambda x: Tau3MuDataset.filter_mu_by_pt_eta(x), axis=1)]
+            pos200 = pos200[pos200.apply(lambda x: Tau3MuDataset.filter_mu_by_pt_eta(x), axis=1)]
 
         neg_idx = np.arange(len(neg))
         np.random.seed(random_state)
@@ -316,49 +355,84 @@ class Tau3MuDataset(InMemoryDataset):
 
         print('[INFO] Mixing data...')
         mixed_pos = []
-        for idx, entry in tqdm(noise_in_mixed_pos.iterrows(), total=len(noise_in_mixed_pos)):
+        for idx, entry in tqdm(pos0.iterrows(), total=len(pos0)):
             for k, v in entry.items():
-                if isinstance(v, int):
+                if 'gen' in k:
+                    continue
+                elif isinstance(v, int):
                     assert k == 'n_mu_hit'
-                    entry[k] += pos0.iloc[idx][k]
-                    entry['score_gt'] = np.zeros(entry[k])
-                    entry['score_gt'][:pos0.iloc[idx][k]] = 1
+                    entry[k] += noise_in_mixed_pos.iloc[idx][k]
+                    entry['score_gt'] = np.ones(entry[k])
+                    entry['score_gt'][:noise_in_mixed_pos.iloc[idx][k]] = 0
                 else:
                     assert isinstance(v, np.ndarray)
-                    entry[k] = np.concatenate((pos0.iloc[idx][k], v))
+                    entry[k] = np.concatenate((noise_in_mixed_pos.iloc[idx][k], v))
             mixed_pos.append(entry.values)
         mixed_pos = pd.DataFrame(data=mixed_pos, columns=entry.index)
 
-        mixed_pos['y'] = 1
         pure_neg['y'] = 0
-        pos200['y'] = 2
+        pos200['y'] = 1
+        mixed_pos['y'] = 2
 
-        return pd.concat((mixed_pos, pure_neg, pos200), join='inner', ignore_index=True)
+        if visz:
+            return pd.concat((mixed_pos, pure_neg, pos200), join='outer', ignore_index=True)
+        else:
+            return pd.concat((mixed_pos, pure_neg, pos200), join='inner', ignore_index=True)
 
     @staticmethod
-    def get_mixed_idx_split(y_dist, splits: dict, pos2neg: float, random_state: int):
+    def get_mixed_idx_split(y_dist, splits: dict, pos2neg: float, random_state: int, mix_and_check: bool):
         assert sum(splits.values()) == 1.0
 
-        mixed_pos_idx = np.argwhere(y_dist == 1).reshape(-1)
         pure_neg_idx = np.argwhere(y_dist == 0).reshape(-1)
-        pos200_idx = np.argwhere(y_dist == 2).reshape(-1)
+        pos200_idx = np.argwhere(y_dist == 1).reshape(-1)
+        mixed_pos_idx = np.argwhere(y_dist == 2).reshape(-1)
 
         np.random.seed(random_state)
         np.random.shuffle(mixed_pos_idx)
         np.random.shuffle(pure_neg_idx)
         np.random.shuffle(pos200_idx)
 
-        n_train_pos, n_valid_pos = int(splits['train'] * len(mixed_pos_idx)), int(splits['valid'] * len(mixed_pos_idx))
-        n_train_neg, n_valid_neg = int(n_train_pos / pos2neg), int(n_valid_pos / pos2neg)
+        if mix_and_check:
+            # train/validate/test on mixed_samples & pu200
+            n_train_pos, n_valid_pos = int(splits['train'] * len(pos200_idx)), int(splits['valid'] * len(pos200_idx))
+            n_train_neg, n_valid_neg = int(splits['train'] * len(mixed_pos_idx)), int(splits['valid'] * len(mixed_pos_idx))
 
-        pos_train_idx = mixed_pos_idx[0:n_train_pos]
-        pos_valid_idx = mixed_pos_idx[n_train_pos:]
-        pos_test_idx = pos200_idx
+            pos_train_idx = pos200_idx[0:n_train_pos]
+            pos_valid_idx = pos200_idx[n_train_pos:n_train_pos + n_valid_pos]
+            pos_test_idx = pos200_idx[n_train_pos+n_valid_pos:]
 
-        neg_train_idx = pure_neg_idx[0:n_train_neg]
-        neg_valid_idx = pure_neg_idx[n_train_neg:n_train_neg + n_valid_neg]
-        neg_test_idx = pure_neg_idx[n_train_neg + n_valid_neg:]
+            neg_train_idx = mixed_pos_idx[0:n_train_neg]
+            neg_valid_idx = mixed_pos_idx[n_train_neg:n_train_neg + n_valid_neg]
+            neg_test_idx = mixed_pos_idx[n_train_neg + n_valid_neg:]
+
+        else:
+            # train/validate on mixed_samples & neg200, test on pu200 & neg200
+            assert len(mixed_pos_idx) <= len(pure_neg_idx) * pos2neg
+            n_train_pos, n_valid_pos = int(splits['train'] * len(mixed_pos_idx)), int( splits['valid'] * len(mixed_pos_idx))
+            n_train_neg, n_valid_neg = int(n_train_pos / pos2neg), int(n_valid_pos / pos2neg)
+
+            pos_train_idx = mixed_pos_idx[0:n_train_pos]
+            pos_valid_idx = mixed_pos_idx[n_train_pos:]
+            pos_test_idx = pos200_idx
+
+            neg_train_idx = pure_neg_idx[0:n_train_neg]
+            neg_valid_idx = pure_neg_idx[n_train_neg:n_train_neg + n_valid_neg]
+            neg_test_idx = pure_neg_idx[n_train_neg + n_valid_neg:]
 
         return {'train': np.concatenate((pos_train_idx, neg_train_idx)).tolist(),
                 'valid': np.concatenate((pos_valid_idx, neg_valid_idx)).tolist(),
                 'test': np.concatenate((pos_test_idx, neg_test_idx)).tolist()}
+
+    @staticmethod
+    def filter_mu_by_pt_eta(x):
+        return ((x['gen_mu_pt'] > 0.5).sum() == 3) and ((abs(x['gen_mu_eta']) < 2.8).sum() == 3) and ((abs(x['gen_mu_eta']) > 1.2).sum() == 3)
+
+
+if __name__ == '__main__':
+    import os
+    os.chdir('../')
+
+    configs = Path('./configs')
+    for cfg in configs.iterdir():
+        cfg_dict = yaml.safe_load(cfg.open('r'))
+        dataset = Tau3MuDataset(cfg_dict['data'])

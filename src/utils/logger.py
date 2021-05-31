@@ -37,17 +37,21 @@ def get_log_path_and_save_metadata(config, processed_data_dir, log_name):
     src_dir = Path(config['data']['src_dir'])
     yaml.dump(config, open(Path(log_path) / 'config.yml', 'w'))
     shutil.copy(src_dir / 'model.py', log_path / 'model.py')
+    shutil.copy(src_dir / 'utils/dataset.py', log_path / 'dataset.py')
     shutil.copytree(src_dir / 'layers', log_path / 'layers')
 
     shutil.copy(Path(processed_data_dir) / 'data_md5.txt', log_path / 'data_md5.txt')
     return log_path
 
 
-def print_splits_and_acc_lower_bound(dataset):
+def print_splits_and_acc_lower_bound(dataset, pred_pt):
     print('[Splits]')
     [print(f'    {k}: {len(v)}') for k, v in dataset.idx_split.items()]
 
-    _, (n0, n1) = np.unique(dataset.data.y[dataset.idx_split['train']], return_counts=True)
+    if pred_pt:
+        _, (n0, n1) = np.unique(dataset.data.y[dataset.idx_split['train'], [0]], return_counts=True)
+    else:
+        _, (n0, n1) = np.unique(dataset.data.y[dataset.idx_split['train']], return_counts=True)
     lb = n0 / (n0 + n1)
     print(f'[INFO] Training accuracy lower bound: {max(1 - lb, lb): .3f}')
 
@@ -94,9 +98,12 @@ def log_epoch(probs, targets, all_batch_losses, auroc_max_fpr, writer, phase, ep
     loss_desc = ''
     for loss_name in all_batch_losses[0].keys():
         current_loss = 0
+        cnt = 0
         for i in range(len(all_batch_losses)):
-            current_loss += all_batch_losses[i][loss_name]
-        current_loss /= len(all_batch_losses)
+            if all_batch_losses[i][loss_name] != 0:
+                current_loss += all_batch_losses[i][loss_name]
+                cnt += 1
+        current_loss /= cnt
 
         writer.add_scalar(f'{phase}/{loss_name}', current_loss, epoch)
         loss_desc += f'{loss_name}: {current_loss: .3f}, '

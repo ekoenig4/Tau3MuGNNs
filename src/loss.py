@@ -20,11 +20,12 @@ class Criterion(torch.nn.Module):
         self.gamma = model_config['focal_gamma']
         self.rmse_beta = model_config['rmse_beta']
         self.kl_beta = model_config['kl_beta']
-
-        self.pred_pt = model_config['pred_pt']
         self.att_sup = model_config['att_sup']
 
-    def forward(self, inputs, targets, pt_pairs=None, kl_pairs=None):
+        self.pred_pt = data_config['pred_pt']
+
+    def forward(self, inputs, targets, pt_pairs, kl_pairs):
+
         loss_dict = {}
         if self.focal_loss:
             bce_loss = F.binary_cross_entropy(inputs, targets, reduction="none")
@@ -47,10 +48,17 @@ class Criterion(torch.nn.Module):
             loss_dict['raw_kl'] = kl_loss.item()
 
         if self.pred_pt:
-            pt_inputs, pt_targets = pt_pairs
-            rmse_loss = torch.sqrt(F.mse_loss(pt_inputs, pt_targets))
-            loss += self.rmse_beta * rmse_loss
-            loss_dict['raw_rmse'] = rmse_loss.item()
+            pos_idx = (targets == 1).reshape(-1)
+            if pos_idx.sum() != 0:
+                pt_inputs, pt_targets = pt_pairs
+                pt_inputs = pt_inputs[pos_idx]
+                pt_targets = pt_targets[pos_idx]
+
+                rmse_loss = torch.sqrt(F.mse_loss(pt_inputs, pt_targets))
+                loss += self.rmse_beta * rmse_loss
+                loss_dict['raw_rmse'] = rmse_loss.item()
+            else:
+                loss_dict['raw_rmse'] = 0.0
 
         loss_dict['total'] = loss.item()
         return loss, loss_dict
