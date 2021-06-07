@@ -1,41 +1,14 @@
-from typing import Optional, List, Union
+from typing import Optional, Union
 from torch_geometric.typing import OptPairTensor, Adj, Size, OptTensor
 
 import torch
 from torch import Tensor
 from torch.nn import Parameter
 import torch.nn.functional as F
-from torch.nn import Sequential, Linear, ReLU, Dropout
-from torch.nn import BatchNorm1d, LayerNorm, InstanceNorm1d
 from torch_sparse import SparseTensor
 from torch_scatter import scatter, scatter_softmax
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.nn.norm import MessageNorm
-
-from torch_geometric.nn.inits import reset
-
-
-class MLP(Sequential):
-    def __init__(self, channels: List[int], norm: Optional[str] = None,
-                 bias: bool = True, dropout: float = 0.5):
-        m = []
-        for i in range(1, len(channels)):
-            m.append(Linear(channels[i - 1], channels[i], bias))
-
-            if i < len(channels) - 1:
-                if norm and norm == 'batch':
-                    m.append(BatchNorm1d(channels[i], affine=True))
-                elif norm and norm == 'layer':
-                    m.append(LayerNorm(channels[i], elementwise_affine=True))
-                elif norm and norm == 'instance':
-                    m.append(InstanceNorm1d(channels[i], affine=False))
-                elif norm:
-                    raise NotImplementedError(
-                        f'Normalization layer "{norm}" not supported.')
-                m.append(ReLU())
-                m.append(Dropout(dropout))
-
-        super(MLP, self).__init__(*m)
 
 
 class GENConv(MessagePassing):
@@ -43,8 +16,7 @@ class GENConv(MessagePassing):
     def __init__(self, in_channels: int, out_channels: int,
                  aggr: str = 'softmax', t: float = 1.0, learn_t: bool = False,
                  p: float = 1.0, learn_p: bool = False, msg_norm: bool = False,
-                 learn_msg_scale: bool = False, norm: str = 'batch',
-                 num_layers: int = 2, eps: float = 1e-7, **kwargs):
+                 learn_msg_scale: bool = False, eps: float = 1e-7, **kwargs):
 
         kwargs.setdefault('aggr', None)
         super(GENConv, self).__init__(**kwargs)
@@ -54,13 +26,7 @@ class GENConv(MessagePassing):
         self.aggr = aggr
         self.eps = eps
 
-        assert aggr in ['softmax', 'softmax_sg', 'power']
-
-        channels = [in_channels]
-        for i in range(num_layers - 1):
-            channels.append(in_channels * 2)
-        channels.append(out_channels)
-        self.mlp = MLP(channels, norm=norm)
+        assert aggr in ['softmax', 'softmax_sg', 'power', 'mean', 'max']
 
         self.msg_norm = MessageNorm(learn_msg_scale) if msg_norm else None
 
@@ -78,7 +44,6 @@ class GENConv(MessagePassing):
             self.p = p
 
     def reset_parameters(self):
-        reset(self.mlp)
         if self.msg_norm is not None:
             self.msg_norm.reset_parameters()
         if self.t and isinstance(self.t, Tensor):
@@ -108,7 +73,7 @@ class GENConv(MessagePassing):
         if self.msg_norm is not None:
             out = self.msg_norm(x[0], out)
 
-        return self.mlp(out)
+        return out
 
     def message(self, x_j: Tensor, edge_attr: OptTensor) -> Tensor:
         msg = x_j if edge_attr is None else x_j + edge_attr
@@ -121,6 +86,14 @@ class GENConv(MessagePassing):
             out = scatter_softmax(inputs * self.t, index, dim=self.node_dim)
             return scatter(inputs * out, index, dim=self.node_dim,
                            dim_size=dim_size, reduce='sum')
+
+        elif self.aggr == 'max':
+            return scatter(inputs, index, dim=self.node_dim,
+                           dim_size=dim_size, reduce='max')
+
+        elif self.aggr == 'mean':
+            return scatter(inputs, index, dim=self.node_dim,
+                           dim_size=dim_size, reduce='mean')
 
         elif self.aggr == 'softmax_sg':
             out = scatter_softmax(inputs * self.t, index,

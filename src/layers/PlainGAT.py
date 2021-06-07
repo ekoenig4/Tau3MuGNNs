@@ -20,7 +20,9 @@ class GATConvWithEdgeAttr(MessagePassing):
         self.out_channels = out_channels
         self.heads = heads
 
-        self.linear = nn.Linear(in_channels, heads * out_channels)
+        self.linear_in = nn.Linear(in_channels, heads * out_channels)
+        self.linear_out = nn.Linear(heads * out_channels, out_channels)
+
         self.att_l = nn.Parameter(torch.Tensor(1, heads, out_channels))
         self.att_r = nn.Parameter(torch.Tensor(1, heads, out_channels))
 
@@ -44,12 +46,12 @@ class GATConvWithEdgeAttr(MessagePassing):
         :return:
         """
 
-        x = self.linear(x).view(-1, self.heads, self.out_channels)  # N x H x C
+        x = self.linear_in(x).view(-1, self.heads, self.out_channels)  # N x H x C
         alpha_l = (x * self.att_l).sum(dim=-1)  # N x H
         alpha_r = (x * self.att_r).sum(dim=-1)  # N x H
 
         out = self.propagate(edge_index, x=x, alpha=(alpha_l, alpha_r), edge_emb=edge_emb)  # N x H x C
-        out = out.mean(dim=1)
+        out = self.linear_out(out.view(-1, self.heads * self.out_channels))
         return out  # N x C
 
     def message(self, x_j, edge_emb, alpha_i, alpha_j, index):

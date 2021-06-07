@@ -8,13 +8,12 @@ Created on 2021/4/21
 
 import torch
 import torch.nn as nn
-from torch_scatter import scatter_max
 from torch_geometric.utils import softmax
 from torch_geometric.nn import GlobalAttention, InstanceNorm, LayerNorm
 from torch_geometric.nn.conv import TransformerConv
-from torch_geometric.nn.pool.topk_pool import TopKPooling, filter_adj
+from torch_geometric.nn.pool.topk_pool import TopKPooling, filter_adj, topk
 
-from layers import PlainGAT, RelationalGAT, DeepGCN
+from layers import PlainGAT, RelationalGAT, DeepGCN, DeepGAT
 
 
 class Model(nn.Module):
@@ -25,49 +24,59 @@ class Model(nn.Module):
         self.out_channels = model_config['out_channels']
         self.n_layers = model_config['n_layers']
         self.model_name = model_config['model_name']
-        self.do_dropout = model_config['dropout']
+        self.dropout_p = model_config['dropout_p']
         self.readout = model_config['readout']
         self.norm_type = model_config['norm_type']
 
         self.att_sup = model_config['att_sup']
         self.att_unsup = model_config['att_unsup']
         self.topk_pooling = model_config['topk_pooling']
+        self.deepgcn_aggr = model_config['deepgcn_aggr']
+        self.share = model_config['share']
 
         self.pred_pt = data_config['pred_pt']
         self.virtual_node = data_config['virtual_node']
-        self.att_sup_layer = int(0.2 * self.n_layers)
 
         self.convs = nn.ModuleList()
-        self.norms = nn.ModuleList()
         self.node_atts = nn.ModuleList()
-
         self.leakyrelu = nn.LeakyReLU()
-        self.dropout = nn.Dropout(p=0.5)
+
+        if self.norm_type == 'batch':
+            norm = nn.BatchNorm1d
+        elif self.norm_type == 'layer':
+            norm = LayerNorm
+        elif self.norm_type == 'instance':
+            norm = InstanceNorm
+        else:
+            raise NotImplementedError
 
         self.node_encoder = nn.Linear(x_dim, self.out_channels)
         self.edge_encoder = nn.Linear(edge_attr_dim, self.out_channels)
 
-        for _ in range(self.n_layers):
+        channels = [self.out_channels, self.out_channels*2, self.out_channels]
+        if self.share:
+            self.mlps = MLP(channels, norm=norm, dropout=self.dropout_p)
+        else:
+            self.mlps = nn.ModuleList()
+
+        for i in range(self.n_layers):
             self.convs.append(self.get_layer_by_name(self.model_name))
 
-            if self.norm_type == 'BN':
-                norm = nn.BatchNorm1d(self.out_channels)
-            elif self.norm_type == 'IN':
-                norm = InstanceNorm(self.out_channels)
-            elif self.norm_type == 'LN':
-                norm = LayerNorm(self.out_channels)
-            else:
-                raise NotImplementedError
-            self.norms.append(norm)
+            if (self.att_sup or self.att_unsup) and i % 3 == 0 and i < self.n_layers - 1:
+                self.node_atts.append(AttSup(self.out_channels, ratio=0.8))
 
-            if self.att_sup or self.att_unsup:
-                self.node_atts.append(AttSup(self.out_channels, min_score=model_config['att_sup_min_score']))
+            if not self.share:
+                self.mlps.append(MLP(channels, norm=norm, dropout=self.dropout_p))
 
         if self.virtual_node:
-            if self.readout == 'rnn':
-                self.rnn = nn.LSTMCell(self.out_channels, self.out_channels)
+            if self.readout == 'lstm':
+                self.lstm = nn.LSTMCell(self.out_channels, self.out_channels)
+            elif self.readout == 'gru':
+                self.gru = nn.GRUCell(self.out_channels, self.out_channels)
             elif self.readout == 'jknet':
                 self.downsample = nn.Linear(self.out_channels * self.n_layers, self.out_channels)
+            elif self.readout == 'virtual-node':
+                pass
             else:
                 raise NotImplementedError
         else:
@@ -96,30 +105,31 @@ class Model(nn.Module):
 
             edge_emb = [intra_level_edge_emb, inter_level_edge_emb, virtual_edge_emb]
         else:
-            edge_index = torch.cat((data.intra_level_edge_index, data.inter_level_edge_index, data.virtual_edge_index),
-                                   dim=1)
-            edge_attr = torch.cat((data.intra_level_edge_features, data.inter_level_edge_features,
-                                   data.virtual_edge_features), dim=0)
+            edge_index = torch.cat((data.intra_level_edge_index, data.inter_level_edge_index, data.virtual_edge_index), dim=1)
+            edge_attr = torch.cat((data.intra_level_edge_features, data.inter_level_edge_features, data.virtual_edge_features), dim=0)
             edge_emb = self.edge_encoder(edge_attr)
 
         for i in range(self.n_layers):
             identity = x
 
             x = self.convs[i](x, edge_index, edge_emb)
+            x = self.mlps(x) if self.share else self.mlps[i](x)
 
             if self.virtual_node:
-                if self.readout == 'rnn':
-                    if i == 0:
-                        hx = identity[v_idx]
-                        cx = torch.zeros_like(identity[v_idx])
-                    hx, cx = self.rnn(x[v_idx], (hx, cx))
+                if i == 0:
+                    hx = identity[v_idx]
+                    cx = torch.zeros_like(identity[v_idx])
+                if self.readout == 'lstm':
+                    hx, cx = self.lstm(x[v_idx], (hx, cx))
+                elif self.readout == 'gru':
+                    hx = self.gru(x[v_idx], hx)
                 elif self.readout == 'jknet':
                     v_emb.append(x[v_idx])
 
-            if i >= self.att_sup_layer and (self.att_sup or self.att_unsup):
+            if (self.att_sup or self.att_unsup) and i % 3 == 0 and i < self.n_layers - 1:
                 assert (not self.att_sup) == self.att_unsup
-                x, edge_index, edge_emb, batch, perm, v_idx, score = self.node_atts[i](x, edge_index, edge_emb, data.batch,
-                                                                                       v_idx, data.num_nodes, self.topk_pooling)
+                x, edge_index, edge_emb, batch, perm, v_idx, score = self.node_atts[i//3](x, edge_index, edge_emb, data.batch,
+                                                                                          v_idx, data.num_nodes, self.topk_pooling)
                 if self.att_sup and data.score_gt.shape[0] != 0:
                     score_pair = [score, data.score_gt, data.batch]
                 if self.topk_pooling:
@@ -129,10 +139,12 @@ class Model(nn.Module):
             x += identity
 
         if self.virtual_node:
-            if self.readout == 'rnn':
+            if self.readout in ['lstm', 'gru']:
                 pool_out = hx
             elif self.readout == 'jknet':
                 pool_out = self.downsample(torch.cat(v_emb, dim=1))
+            elif self.readout == 'virtual-node':
+                pool_out = x[v_idx]
         else:
             pool_out = self.pool(x, data.batch)
 
@@ -150,14 +162,13 @@ class Model(nn.Module):
         if model_name == 'PlainGAT':
             conv_layer = PlainGAT.GATConvWithEdgeAttr(self.out_channels, self.out_channels, self.heads)
         elif model_name == 'UniMP':
-            conv_layer = TransformerConv(self.out_channels, self.out_channels, self.heads, edge_dim=self.out_channels,
-                                         concat=False)
+            conv_layer = TransformerConv(self.out_channels, self.out_channels, self.heads, edge_dim=self.out_channels, concat=False)
         elif model_name == 'RelationalGAT':
-            conv_layer = RelationalGAT.RelationalGATConv(self.out_channels, self.out_channels, self.heads,
-                                                         self.virtual_node, self.do_dropout)
+            conv_layer = RelationalGAT.RelationalGATConv(self.out_channels, self.out_channels, self.heads, self.virtual_node)
         elif model_name == 'DeepGCN':
-            conv_layer = DeepGCN.GENConv(self.out_channels, self.out_channels, aggr='softmax',
-                                         learn_t=True, learn_p=True)
+            conv_layer = DeepGCN.GENConv(self.out_channels, self.out_channels, aggr=self.deepgcn_aggr, learn_t=True, learn_p=True)
+        elif model_name == 'DeepGAT':
+            conv_layer = DeepGAT.DeepGATConv(self.out_channels, self.out_channels)
         else:
             raise NotImplementedError
         return conv_layer
@@ -176,27 +187,42 @@ class Model(nn.Module):
         return idx
 
 
+class MLP(nn.Sequential):
+    def __init__(self, channels, norm, dropout, bias=True):
+        m = []
+        for i in range(1, len(channels)):
+            m.append(nn.Linear(channels[i - 1], channels[i], bias))
+
+            if i < len(channels) - 1:
+                m.append(norm(channels[i]))
+                m.append(nn.LeakyReLU())
+                m.append(nn.Dropout(dropout))
+
+        super(MLP, self).__init__(*m)
+
+
 class AttSup(TopKPooling):
 
-    def __init__(self, in_channels, min_score):
-        super().__init__(in_channels, min_score=min_score)
+    def __init__(self, in_channels, ratio):
+        super().__init__(in_channels, ratio=ratio)
         self.alpha = nn.Parameter(torch.Tensor(1))
         nn.init.ones_(self.alpha)
 
-    def forward(self, x, edge_index, edge_emb, batch, v_idx, num_nodes, topk_pooling, mask_virtual=False):
-        node_mask = torch.ones_like(batch, dtype=torch.bool)
-        if mask_virtual:
-            node_mask[v_idx] = 0
+    def forward(self, x, edge_index, edge_emb, batch, v_idx, num_nodes, topk_pooling):
 
         # calculate scores for non-virtual nodes
-        score = (x[node_mask] * self.weight).sum(dim=-1)
-        score = softmax(score, batch[node_mask])
-        x[node_mask] *= score.view(-1, 1) * self.alpha
+        score = (x * self.weight).sum(dim=-1)
+        score = softmax(score, batch)
+        x = x * score.view(-1, 1) * self.alpha
 
         perm = None
         if topk_pooling:
             # select non-virtual nodes and concat virtual nodes
-            perm, v_idx = AttSup.topk(score, batch[node_mask], self.min_score, v_idx)
+            perm = topk(score, self.ratio, batch)
+            # make sure that all virtual nodes are added
+            perm = torch.unique(torch.cat((perm, v_idx)), sorted=True)
+            # find the indices of v_idx in perm and return them as the new v_idx
+            v_idx = (perm.unsqueeze(1) == v_idx).nonzero(as_tuple=False)[:, 0]
 
             # filter unimportant nodes
             batch = batch[perm]
@@ -210,17 +236,3 @@ class AttSup(TopKPooling):
                 edge_index, edge_emb = filter_adj(edge_index, edge_emb, perm, num_nodes)
 
         return x, edge_index, edge_emb, batch, perm, v_idx, score
-
-    @staticmethod
-    def topk(x, batch, min_score, v_idx, tol=1e-7):
-        # Make sure that we do not drop all nodes in a graph.
-        scores_max = scatter_max(x, batch)[0][batch] - tol
-        scores_min = scores_max.clamp(max=min_score)
-
-        perm = (x > scores_min).nonzero(as_tuple=False).view(-1)
-
-        # make sure that all virtual nodes are added
-        perm = torch.sort(torch.cat((perm, v_idx)))[0]
-        # find the indices of v_idx in perm and return them as the new v_idx
-        v_idx = (perm.unsqueeze(1) == v_idx).nonzero(as_tuple=False)[:, 0]
-        return perm, v_idx

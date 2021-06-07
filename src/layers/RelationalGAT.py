@@ -14,16 +14,14 @@ from torch_geometric.utils import softmax
 
 class RelationalGATConv(MessagePassing):
 
-    def __init__(self, in_channels, out_channels, heads, virtual_node, do_dropout):
+    def __init__(self, in_channels, out_channels, heads, virtual_node):
         super(RelationalGATConv, self).__init__(node_dim=0)
 
         self.out_channels = out_channels
         self.heads = heads
         self.virtual_node = virtual_node
-        self.do_dropout = do_dropout
 
         self.linear = nn.Linear(in_channels, heads * out_channels)
-        self.dropout = nn.Dropout(p=0.5)
         self.att_l_inter = nn.Parameter(torch.Tensor(1, heads, out_channels))
         self.att_r_inter = nn.Parameter(torch.Tensor(1, heads, out_channels))
         self.att_l_intra = nn.Parameter(torch.Tensor(1, heads, out_channels))
@@ -102,6 +100,4 @@ class RelationalGATConv(MessagePassing):
         """
         alpha = self.leakyrelu(alpha_i + alpha_j)  # E x H
         alpha = softmax(alpha, index).unsqueeze(-1)  # E x H
-        #  if self.do_dropout:
-        #      alpha = self.dropout(alpha)
         return alpha * (x_j + edge_emb.unsqueeze(1))
