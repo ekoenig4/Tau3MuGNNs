@@ -9,7 +9,7 @@ Created on 2021/4/21
 import torch
 import torch.nn as nn
 from torch_geometric.utils import softmax
-from torch_geometric.nn import GlobalAttention, InstanceNorm, LayerNorm
+from torch_geometric.nn import GlobalAttention, InstanceNorm, LayerNorm, GraphNorm
 from torch_geometric.nn.conv import TransformerConv
 from torch_geometric.nn.pool.topk_pool import TopKPooling, filter_adj, topk
 
@@ -34,7 +34,7 @@ class Model(nn.Module):
         self.deepgcn_aggr = model_config['deepgcn_aggr']
         self.share = model_config['share']
 
-        self.pred_pt = data_config['pred_pt']
+        self.run_type = data_config['run_type']
         self.virtual_node = data_config['virtual_node']
 
         self.convs = nn.ModuleList()
@@ -47,6 +47,8 @@ class Model(nn.Module):
             norm = LayerNorm
         elif self.norm_type == 'instance':
             norm = InstanceNorm
+        elif self.norm_type == 'graph':
+            norm = GraphNorm
         else:
             raise NotImplementedError
 
@@ -83,8 +85,8 @@ class Model(nn.Module):
             gate_nn = nn.Linear(self.out_channels, 1)
             self.pool = GlobalAttention(gate_nn)
 
-        if self.pred_pt:
-            self.fc_out = nn.Linear(self.out_channels, 4)
+        if self.run_type == 'regress':
+            self.fc_out = nn.Linear(self.out_channels, 3)
         else:
             self.fc_out = nn.Linear(self.out_channels, 1)
         self.sigmoid = nn.Sigmoid()
@@ -105,15 +107,20 @@ class Model(nn.Module):
 
             edge_emb = [intra_level_edge_emb, inter_level_edge_emb, virtual_edge_emb]
         else:
-            edge_index = torch.cat((data.intra_level_edge_index, data.inter_level_edge_index, data.virtual_edge_index), dim=1)
-            edge_attr = torch.cat((data.intra_level_edge_features, data.inter_level_edge_features, data.virtual_edge_features), dim=0)
+            if hasattr(data, 'edge_index') and data.edge_index is not None:
+                assert hasattr(data, 'edge_attr') and data.edge_attr is not None
+                edge_index = data.edge_index
+                edge_attr = data.edge_attr
+            else:
+                edge_index = torch.cat((data.intra_level_edge_index, data.inter_level_edge_index, data.virtual_edge_index), dim=1)
+                edge_attr = torch.cat((data.intra_level_edge_features, data.inter_level_edge_features, data.virtual_edge_features), dim=0)
             edge_emb = self.edge_encoder(edge_attr)
 
         for i in range(self.n_layers):
             identity = x
 
             x = self.convs[i](x, edge_index, edge_emb)
-            x = self.mlps(x) if self.share else self.mlps[i](x)
+            x = self.mlps(x, data.batch) if self.share else self.mlps[i](x, data.batch)
 
             if self.virtual_node:
                 if i == 0:
@@ -150,9 +157,9 @@ class Model(nn.Module):
 
         out = self.fc_out(pool_out)
 
-        if self.pred_pt:
-            pt_pair = [out[:, 1:], data.y[:, 1:]]
-            out = self.sigmoid(out[:, [0]])
+        if self.run_type == 'regress':
+            pt_pair = [out, data.y]
+            out = torch.zeros_like(out, dtype=torch.float)
         else:
             out = self.sigmoid(out)
         return out, score_pair, pt_pair
@@ -187,7 +194,17 @@ class Model(nn.Module):
         return idx
 
 
-class MLP(nn.Sequential):
+class BatchSequential(nn.Sequential):
+    def forward(self, inputs, batch):
+        for module in self._modules.values():
+            if isinstance(module, (GraphNorm, InstanceNorm)):
+                inputs = module(inputs, batch)
+            else:
+                inputs = module(inputs)
+        return inputs
+
+
+class MLP(BatchSequential):
     def __init__(self, channels, norm, dropout, bias=True):
         m = []
         for i in range(1, len(channels)):

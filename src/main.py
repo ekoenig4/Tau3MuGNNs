@@ -26,11 +26,12 @@ class Main(object):
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.dataset = Tau3MuDataset(config['data'])
-        logger.print_splits_and_acc_lower_bound(self.dataset, config['data']['pred_pt'])
+        self.run_type = config['data']['run_type']
+        logger.print_splits_and_acc_lower_bound(self.dataset, self.run_type)
         md5 = self.dataset.md5sum(self.dataset.data, self.dataset.slices, self.dataset.idx_split, print_md5=True)
 
-        self.log_path = logger.get_log_path_and_save_metadata(config, self.dataset.processed_dir, log_name)
         if __name__ == '__main__':
+            self.log_path = logger.get_log_path_and_save_metadata(config, self.dataset.processed_dir, log_name)
             self.writer = logger.Writer(self.log_path)
 
         self.auroc_max_fpr, self.test_interval = config['eval']['auroc_max_fpr'], config['eval']['test_interval']
@@ -72,7 +73,7 @@ class Main(object):
             if idx == loader_len - 1:
                 desc, total_loss, auroc, recall = logger.log_epoch(torch.cat(all_probs), torch.cat(all_targets),
                                                                    all_batch_losses, self.auroc_max_fpr,
-                                                                   self.writer, phase, epoch)
+                                                                   self.writer, phase, epoch, self.run_type)
             pbar.set_description(desc)
 
         return total_loss, auroc, recall
@@ -82,15 +83,15 @@ class Main(object):
         self.model.eval()
 
         probs, score_pair, pt_pair = self.model(data)
-        loss, loss_dict = self.criterion(probs, data.y[:, [0]], kl_pairs=score_pair, pt_pairs=pt_pair)
-        return loss_dict, probs.data.cpu(), data.y[:, [0]].data.cpu(), None
+        loss, loss_dict = self.criterion(probs, data.y, kl_pairs=score_pair, pt_pairs=pt_pair)
+        return loss_dict, probs.data.cpu(), data.y.data.cpu(), None
 
     def train_one_batch(self, data):
         self.model.train()
         self.optimizer.zero_grad()
 
         probs, score_pair, pt_pair = self.model(data)
-        loss, loss_dict = self.criterion(probs, data.y[:, [0]], kl_pairs=score_pair, pt_pairs=pt_pair)
+        loss, loss_dict = self.criterion(probs, data.y, kl_pairs=score_pair, pt_pairs=pt_pair)
 
         loss.backward()
         self.optimizer.step()
@@ -99,7 +100,7 @@ class Main(object):
             self.scheduler.step()
 
         lr = self.optimizer.param_groups[0]['lr']
-        return loss_dict, probs.data.cpu(), data.y[:, [0]].data.cpu(), lr
+        return loss_dict, probs.data.cpu(), data.y.data.cpu(), lr
 
     def load_checkpoint(self):
         print(f'[INFO] Loading checkpoint from {self.resume}')

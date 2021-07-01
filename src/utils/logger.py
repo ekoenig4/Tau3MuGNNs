@@ -44,16 +44,16 @@ def get_log_path_and_save_metadata(config, processed_data_dir, log_name):
     return log_path
 
 
-def print_splits_and_acc_lower_bound(dataset, pred_pt):
+def print_splits_and_acc_lower_bound(dataset, run_type):
     print('[Splits]')
     [print(f'    {k}: {len(v)}') for k, v in dataset.idx_split.items()]
 
-    if pred_pt:
-        _, (n0, n1) = np.unique(dataset.data.y[dataset.idx_split['train'], [0]], return_counts=True)
+    if run_type == 'regress':
+        pass
     else:
         _, (n0, n1) = np.unique(dataset.data.y[dataset.idx_split['train']], return_counts=True)
-    lb = n0 / (n0 + n1)
-    print(f'[INFO] Training accuracy lower bound: {max(1 - lb, lb): .3f}')
+        lb = n0 / (n0 + n1)
+        print(f'[INFO] Training accuracy lower bound: {max(1 - lb, lb): .3f}')
 
 
 def get_best_res(res):
@@ -93,7 +93,7 @@ def log_batch(loss_dict, phase, epoch, step, writer, lr):
 
 
 # TODO: add_pr_curve will only update after testing the model
-def log_epoch(probs, targets, all_batch_losses, auroc_max_fpr, writer, phase, epoch):
+def log_epoch(probs, targets, all_batch_losses, auroc_max_fpr, writer, phase, epoch, run_type):
 
     loss_desc = ''
     for loss_name in all_batch_losses[0].keys():
@@ -111,6 +111,10 @@ def log_epoch(probs, targets, all_batch_losses, auroc_max_fpr, writer, phase, ep
         if 'total' in loss_name:
             total_loss = current_loss
 
+    if run_type == 'regress':
+        desc = f'[Epoch: {epoch}]: {phase} finished, ' + loss_desc
+        return desc, total_loss, 0, 0
+
     auroc = metrics.roc_auc_score(targets, probs)
     partial_auroc = metrics.roc_auc_score(targets, probs, max_fpr=auroc_max_fpr)
     fpr, recall, thres = metrics.roc_curve(targets, probs)
@@ -121,6 +125,10 @@ def log_epoch(probs, targets, all_batch_losses, auroc_max_fpr, writer, phase, ep
     writer.add_scalar(f'{phase}/recall_on_max_fpr/', recall[indices[0]], epoch)
     writer.add_scalar(f'{phase}/recall_on_max_fpr_over_10/', recall[indices[1]], epoch)
     writer.add_roc_curve(f'ROC_Curve/{phase}', targets, probs, epoch)
+    writer.add_roc_curve(f'TriggerRate_Curve/{phase}', targets, probs, epoch, to_trigger_rate=True)
+
+    fig = PlotROC(fpr=fpr*31000, tpr=recall, roc_auc=auroc).plot().figure_  # kHz
+    writer.add_figure(f'TriggerRate/{phase}', fig, epoch)
 
     cm = metrics.confusion_matrix(targets, y_pred=probs > thres[indices[0]], normalize=None)
     fig = PlotCM(confusion_matrix=cm, display_labels=['Neg', 'Pos']).plot(cmap=plt.cm.Blues).figure_
@@ -159,20 +167,19 @@ class Writer(SummaryWriter):
             self.add_scalar(k, v)
 
     def add_roc_curve(self, tag, labels, predictions, global_step=None,
-                      num_thresholds=127, weights=None, walltime=None):
+                      num_thresholds=127, weights=None, walltime=None, to_trigger_rate=False):
 
         torch._C._log_api_usage_once("tensorboard.logging.add_pr_curve")
         labels, predictions = make_np(labels), make_np(predictions)
         self._get_file_writer().add_summary(
-            Writer.roc_curve(tag, labels, predictions, num_thresholds, weights),
+            Writer.roc_curve(tag, labels, predictions, num_thresholds, weights, to_trigger_rate),
             global_step, walltime)
 
     @staticmethod
-    def roc_curve(tag, labels, predictions, num_thresholds=127, weights=None):
+    def roc_curve(tag, labels, predictions, num_thresholds=127, weights=None, to_trigger_rate=False):
         # weird, value > 127 breaks protobuf
         num_thresholds = min(num_thresholds, 127)
-        data = Writer.compute_roc_curve(labels, predictions,
-                                        num_thresholds=num_thresholds, weights=weights)
+        data = Writer.compute_roc_curve(labels, predictions, num_thresholds, weights, to_trigger_rate)
         pr_curve_plugin_data = PrCurvePluginData(
             version=0, num_thresholds=num_thresholds).SerializeToString()
         plugin_data = SummaryMetadata.PluginData(
@@ -186,7 +193,7 @@ class Writer(SummaryWriter):
         return Summary(value=[Summary.Value(tag=tag, metadata=smd, tensor=tensor)])
 
     @staticmethod
-    def compute_roc_curve(labels, predictions, num_thresholds=None, weights=None):
+    def compute_roc_curve(labels, predictions, num_thresholds=None, weights=None, to_trigger_rate=False):
         _MINIMUM_COUNT = 1e-7
 
         if weights is None:
@@ -215,12 +222,20 @@ class Writer(SummaryWriter):
         precision = tp / np.maximum(_MINIMUM_COUNT, tp + fp)
         recall = tp / np.maximum(_MINIMUM_COUNT, tp + fn)
         fpr = fp / np.maximum(_MINIMUM_COUNT, fp + tn)
+
+        if to_trigger_rate:
+            fpr = fpr * 310  # 100 kHz
+
         return np.stack((tp, fp, tn, fn, recall, fpr))
 
 
 class PlotROC(metrics.RocCurveDisplay):
     def plot(self, ax=None, *, name=None, **kwargs):
         check_matplotlib_support('RocCurveDisplay.plot')
+
+        if ax is None:
+            fig = figure.Figure()
+            ax = fig.subplots()
 
         name = self.estimator_name if name is None else name
 
@@ -234,21 +249,13 @@ class PlotROC(metrics.RocCurveDisplay):
 
         line_kwargs.update(**kwargs)
 
-        if ax is None:
-            fig = figure.Figure()
-            ax = fig.subplots()
-
-        self.line_, = ax.plot(self.fpr, self.tpr, **line_kwargs)
-        ax.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-        info_pos_label = (f" (Positive label: {self.pos_label})"
-                          if self.pos_label is not None else "")
-
-        xlabel = "False Positive Rate" + info_pos_label
-        ylabel = "True Positive Rate" + info_pos_label
-        ax.set(xlabel=xlabel, ylabel=ylabel)
+        self.line_ = ax.plot(self.fpr, self.tpr, **line_kwargs)[0]
+        ax.set_xlabel("Trigger Rate (kHz)")
+        ax.set_ylabel("Trigger Acceptance Rate")
+        ax.set_xlim(0, 100)  # 0 - 100 kHz
 
         if "label" in line_kwargs:
-            ax.legend(loc="lower right")
+            ax.legend(loc='lower right')
 
         self.ax_ = ax
         self.figure_ = ax.figure

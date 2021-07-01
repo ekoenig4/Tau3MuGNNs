@@ -1,12 +1,17 @@
 # Tau3MuGNNs
 
 ## 1. Requirements
-The project is developed with Python 3.8.5 and it uses the following packages to build models:
+The project is developed with Python 3.8.5, and it uses the following packages to build models:
 ```
 torch==1.8.1
 torch_geometric==1.7.0
 ```
 The full list can be found in `./requirements.txt`.
+
+One can also pull the following docker image to run the code:
+```
+docker pull siqim/mlg
+```
 
 ## 2. Run the code
 To train and test a model, please run:

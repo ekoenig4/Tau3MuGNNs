@@ -1,5 +1,5 @@
 torch==1.8.1
-torch_geometric==1.7.0
+torch_geometric==1.7.1
 tensorboard==2.5.0
 uproot3==3.14.4
 pandas==1.2.4

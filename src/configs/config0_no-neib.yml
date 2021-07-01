@@ -6,17 +6,22 @@ data:
   add_self_loops: True
   virtual_node: True
   only_one_tau: True
+  hit_constrain: False
   splits:
     train: 0.7
     valid: 0.15
     test: 0.15
   pos2neg: 0.16
   random_state: 1
-  mix_samples: False
+  filter_soft_mu: False
+  normalize: False
+  one_hot: False
+  run_type: reg
+  visz: True
 
   conditions:
-    mu_hit_station: '==1'
-    n_mu_hit: '>= 3'
+    1-mu_hit_station: '==1'
+    2-mu_hit_neighbor: '==0'
 
   node_feature_names:
     - mu_hit_ring
@@ -35,28 +40,31 @@ data:
     - mu_hit_sim_z
 
 model:
+  resume: DeepGCN-06_14_2021-00_20_08-noshare_16_batch
+  only_eval: True
+  n_layers: 16
+  out_channels: 128
+  model_name: DeepGCN
+  dropout_p: 0.5
+  norm_type: batch
+  readout: lstm
+  share: False
+  heads: 3
+  epochs: 500
+  batch_size: 256
+  lr: 2e-4
   focal_loss: True
   focal_alpha: 0.5
   focal_gamma: 3
+  deepgcn_aggr: softmax
+  att_sup_min_score: 0.2
+  kl_beta: 0.1
+  rmse_beta: 0.025
+  scheduler: False
   att_sup: False
   att_unsup: False
-  pred_pt: False
-  epochs: 250
-  batch_size: 256
-  lr: 4e-4
-  n_layers: 16
-  heads: 3
-  out_channels: 128
-  resume: False
-  model_name: RelationalGAT
-  readout: rnn
-  dropout: True
-  scheduler: False
-  only_eval: False
-  att_sup_min_score: 0.05
-  kl_beta: 0.1
-  rmse_beta: 1
+  topk_pooling: False
 
 eval:
-  test_interval: 10
+  test_interval: 5
   auroc_max_fpr: 0.001

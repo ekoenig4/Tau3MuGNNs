@@ -6,6 +6,7 @@ Created on 2021/5/17
 @author: Siqi Miao
 """
 
+from math import sqrt
 import torch
 import torch.nn.functional as F
 from torch_scatter import scatter_sum
@@ -22,12 +23,35 @@ class Criterion(torch.nn.Module):
         self.kl_beta = model_config['kl_beta']
         self.att_sup = model_config['att_sup']
 
-        self.pred_pt = data_config['pred_pt']
+        self.run_type = data_config['run_type']
 
     def forward(self, inputs, targets, pt_pairs, kl_pairs):
 
         loss_dict = {}
-        if self.focal_loss:
+        if self.run_type == 'regress':
+            idx_dict = {'e': 0, 'pt': 3, 'eta': 6}
+            pt_inputs, pt_targets = pt_pairs
+            assert pt_targets.shape[1] == 9
+            sl1_loss = F.smooth_l1_loss(pt_inputs, pt_targets[:, list(idx_dict.values())])
+            loss = sl1_loss
+
+            with torch.no_grad():
+                pred_v = {key: None for key in idx_dict.keys()}
+                for i, (k, j) in enumerate(idx_dict.items()):
+                    pred = (pt_inputs[:, i] * pt_targets[:, j+2]) + pt_targets[:, j+1]
+                    pred_v[k] = pred
+                    with torch.no_grad():
+                        ground_truth = (pt_targets[:, j] * pt_targets[:, j + 2]) + pt_targets[:, j + 1]
+                        loss_dict['MAE_' + k] = F.l1_loss(pred, ground_truth).item()
+                sq_mass = pred_v['e'] ** 2 - (pred_v['pt'] * torch.cosh(pred_v['eta'])) ** 2
+                mass = torch.sqrt(F.relu(sq_mass)) - 1.77682
+                target_mass = torch.zeros_like(mass)
+                # loss += F.smooth_l1_loss(mass, target_mass)/3 * 0.1
+
+            with torch.no_grad():
+                loss_dict['MAE_mass'] = F.l1_loss(mass, target_mass).item()
+
+        elif self.focal_loss:
             bce_loss = F.binary_cross_entropy(inputs, targets, reduction="none")
             p_t = inputs * targets + (1 - inputs) * (1 - targets)
             loss = bce_loss * ((1 - p_t) ** self.gamma)
@@ -46,19 +70,6 @@ class Criterion(torch.nn.Module):
             kl_loss = scatter_sum(F.kl_div(torch.log(kl_inputs + 1e-14), kl_targets, reduction='none'), batch).mean()
             loss += self.kl_beta * kl_loss
             loss_dict['raw_kl'] = kl_loss.item()
-
-        if self.pred_pt:
-            pos_idx = (targets == 1).reshape(-1)
-            if pos_idx.sum() != 0:
-                pt_inputs, pt_targets = pt_pairs
-                pt_inputs = pt_inputs[pos_idx]
-                pt_targets = pt_targets[pos_idx]
-
-                rmse_loss = torch.sqrt(F.mse_loss(pt_inputs, pt_targets))
-                loss += self.rmse_beta * rmse_loss
-                loss_dict['raw_rmse'] = rmse_loss.item()
-            else:
-                loss_dict['raw_rmse'] = 0.0
 
         loss_dict['total'] = loss.item()
         return loss, loss_dict
