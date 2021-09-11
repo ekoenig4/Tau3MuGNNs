@@ -1,0 +1,64 @@
+data:
+  data_dir: ../data
+  log_dir: ../logs
+  src_dir: ./
+  add_self_loops: True
+  virtual_node: True
+  only_one_tau: True
+  hit_constrain: False
+  splits:
+    train: 0.7
+    valid: 0.15
+    test: 0.15
+  pos2neg: 0.38
+  random_state: 1
+  filter_soft_mu: False
+  normalize: True
+  one_hot: True
+  radius: True
+  endcap: True
+  run_type: da_eval
+  visz: True
+
+  conditions:
+    1-mu_hit_station: '==1'
+    2-mu_hit_neighbor: '==0'
+
+  node_feature_names:
+    - mu_hit_sim_eta
+    - mu_hit_sim_phi
+    - mu_hit_bend
+
+  edge_feature_names:
+    - mu_hit_sim_eta
+    - mu_hit_sim_phi
+
+model:
+  resume: DeepGCN-09_02_2021-04_46_42-endcap_etaphibend
+  only_eval: True
+  n_layers: 16
+  out_channels: 128
+  model_name: DeepGCN
+  dropout_p: 0.5
+  norm_type: batch
+  readout: lstm
+  share: False
+  heads: 3
+  epochs: 500
+  batch_size: 256
+  lr: 4e-4
+  focal_loss: True
+  focal_alpha: 0.5
+  focal_gamma: 3
+  deepgcn_aggr: softmax
+  att_sup_min_score: 0.2
+  kl_beta: 0.1
+  rmse_beta: 0.025
+  scheduler: False
+  att_sup: False
+  att_unsup: False
+  topk_pooling: False
+
+eval:
+  test_interval: 10
+  auroc_max_fpr: 0.001

@@ -2,7 +2,6 @@
 
 """
 Created on 2021/4/15
-
 @author: Siqi Miao
 """
 
@@ -27,6 +26,8 @@ class Main(object):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.dataset = Tau3MuDataset(config['data'])
         self.run_type = config['data']['run_type']
+        self.endcap = config['data']['endcap']
+
         logger.print_splits_and_acc_lower_bound(self.dataset, self.run_type)
         md5 = self.dataset.md5sum(self.dataset.data, self.dataset.slices, self.dataset.idx_split, print_md5=True)
 
@@ -41,6 +42,15 @@ class Main(object):
         self.train_loader = DataLoader(self.dataset[self.dataset.idx_split['train']], batch_size=self.batch_size, shuffle=True)
         self.valid_loader = DataLoader(self.dataset[self.dataset.idx_split['valid']], batch_size=self.batch_size, shuffle=False)
         self.test_loader = DataLoader(self.dataset[self.dataset.idx_split['test']], batch_size=self.batch_size, shuffle=False)
+        self.num_train_batch = len(self.train_loader)
+
+        if self.endcap:
+            self.train_loader = [self.train_loader, DataLoader([self.dataset.data_list_endcap[i] for i in self.dataset.idx_split['train']],
+                                                               batch_size=self.batch_size, shuffle=True)]
+            self.valid_loader = [self.valid_loader, DataLoader([self.dataset.data_list_endcap[i] for i in self.dataset.idx_split['valid']],
+                                                               batch_size=self.batch_size, shuffle=False)]
+            self.test_loader = [self.test_loader, DataLoader([self.dataset.data_list_endcap[i] for i in self.dataset.idx_split['test']],
+                                                             batch_size=self.batch_size,  shuffle=False)]
 
         self.model = Model(self.dataset.x_dim, self.dataset.edge_attr_dim, config['model'], config['data']).to(self.device)
         num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
@@ -52,18 +62,38 @@ class Main(object):
         self.scheduler = None
         if config['model']['scheduler']:
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(self.optimizer, max_lr=eval(config['model']['lr']),
-                                                                 steps_per_epoch=len(self.train_loader), epochs=self.epochs)
+                                                                 steps_per_epoch=self.num_train_batch, epochs=self.epochs)
 
     def run_one_epoch(self, data_loader, epoch, phase):
-        loader_len = len(data_loader)
+        loader_len = len(data_loader) if not self.endcap else len(data_loader[0])
         all_probs, all_targets, all_batch_losses = [], [], []
 
         run_one_batch = self.train_one_batch if phase == 'train' else self.eval_one_batch
         phase = 'test ' if phase == 'test' else phase  # align tqdm desc bar
 
-        pbar = tqdm(data_loader)
+        pbar = tqdm(data_loader, total=loader_len) if not self.endcap else tqdm(zip(*data_loader), total=loader_len)
         for idx, data in enumerate(pbar):
-            loss_dict, probs, targets, lr = run_one_batch(data.to(self.device))
+            if self.endcap:
+                data1, data2 = data
+                loss_dict_1, probs_1, targets_1, _ = run_one_batch(data1.to(self.device))
+                loss_dict_2, probs_2, targets_2, lr = run_one_batch(data2.to(self.device))
+                loss_dict = {}
+                for key in loss_dict_1.keys():
+                    loss_dict[key] = (loss_dict_1[key] + loss_dict_2[key]) / 2
+
+                if phase == 'train':
+                    probs = torch.cat((probs_1, probs_2), dim=0)
+                    targets = torch.cat((targets_1, targets_2), dim=0)
+                else:
+                    targets = torch.cat((targets_1, targets_2), dim=1)
+                    targets = torch.max(targets, dim=1)[0].reshape(-1, 1)
+
+                    probs = torch.cat((probs_1, probs_2), dim=1)
+                    probs = torch.max(probs, dim=1)[0].reshape(-1, 1)
+
+            else:
+                loss_dict, probs, targets, lr = run_one_batch(data.to(self.device))
+
             desc = logger.log_batch(loss_dict, phase, epoch, epoch * loader_len + idx, self.writer, lr)
 
             all_probs.append(probs)
@@ -104,7 +134,8 @@ class Main(object):
 
     def load_checkpoint(self):
         print(f'[INFO] Loading checkpoint from {self.resume}')
-        checkpoint = torch.load(Path(self.config['data']['log_dir']) / self.resume / 'model.pt')
+        checkpoint = torch.load(Path(self.config['data']['log_dir']) / self.resume / 'model.pt',
+                                map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.start_epoch = checkpoint['epoch'] + 1
@@ -115,7 +146,7 @@ class Main(object):
     def save_checkpoint(self, epoch):
         torch.save({
             'epoch': epoch,
-            'n_iters': (epoch + 1) * len(self.train_loader),
+            'n_iters': (epoch + 1) * self.num_train_batch,
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
         }, self.log_path / 'model.pt')

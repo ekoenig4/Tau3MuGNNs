@@ -2,12 +2,12 @@
 
 """
 Created on 2021/4/14
-
 @author: Siqi Miao
 """
 
 import yaml
 import hashlib
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
@@ -16,6 +16,7 @@ from itertools import combinations, permutations, product
 
 import torch
 import torch_geometric
+from torch_geometric.nn import radius_graph
 from torch_geometric.data import Data, InMemoryDataset
 
 from torch import Tensor
@@ -28,7 +29,6 @@ class Tau3MuDataset(InMemoryDataset):
         self.config = config
         self.data_dir = Path(config['data_dir'])
         self.conditions = config['conditions']
-        self.train_with_noise = config['train_with_noise']
         self.add_self_loops = config['add_self_loops']
         self.node_feature_names = config['node_feature_names']
         self.edge_feature_names = config['edge_feature_names']
@@ -42,6 +42,8 @@ class Tau3MuDataset(InMemoryDataset):
         self.filter_soft_mu = config['filter_soft_mu']
         self.normalize = config['normalize']
         self.one_hot = config['one_hot']
+        self.radius = config['radius']
+        self.endcap = config['endcap']
 
         self.run_type = config['run_type']
         print('[INFO] run_type:', self.run_type)
@@ -50,11 +52,17 @@ class Tau3MuDataset(InMemoryDataset):
         self.node_feature_stat = None
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
-        self.data, self.slices, self.idx_split = torch.load(self.processed_paths[0])
+        self.data, self.slices, self.idx_split, self.node_feature_stat = torch.load(self.processed_paths[0])
         self.x_dim = self.data.x.shape[-1]
-        self.edge_attr_dim = max(self.data.intra_level_edge_features.shape[-1],
-                                 self.data.inter_level_edge_features.shape[-1])
-        self.all_entries, self.node_feature_stat = torch.load(Path(self.processed_dir) / 'all_entries.pt') if self.visz else (None, None)
+
+        if self.data.edge_attr is None:
+            self.edge_attr_dim = max(self.data.intra_level_edge_features.shape[-1],
+                                     self.data.inter_level_edge_features.shape[-1])
+        else:
+            self.edge_attr_dim = self.data.edge_attr.shape[-1]
+
+        self.data_list_endcap = torch.load(Path(self.processed_dir) / 'data_list_endcap.pt') if self.endcap else None
+        self.all_entries = torch.load(Path(self.processed_dir) / 'all_entries.pt') if self.visz else None
 
     @property
     def raw_file_names(self):
@@ -86,62 +94,146 @@ class Tau3MuDataset(InMemoryDataset):
         idx_split = Tau3MuDataset.get_idx_split(df, self.splits, self.pos2neg, self.run_type, self.random_state)
         del dfs
 
-        data_list = []
+        data_list, data_list_endcap = [], []
         print('[INFO] Processing entries...')
-        for idx, entry in tqdm(df.iterrows(), total=len(df)):
+        np.random.seed(self.random_state)
 
-            entry = Tau3MuDataset.mask_hits(df, idx, entry, self.conditions)
-            if self.normalize:
-                entry = Tau3MuDataset.z_score_with_missing_values(entry, self.node_feature_stat)
-
-            x, score_gt = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node, self.one_hot, self.run_type)
-
-            if self.run_type == 'regress':
-                y = torch.tensor(entry.y, dtype=torch.float).view(-1, 9)
+        idx_for_training = set(idx_split['train'])
+        for pd_idx, entry in enumerate(tqdm(df.itertuples(), total=len(df))):
+            masked_entry = Tau3MuDataset.mask_hits(df, entry, self.conditions)
+            if not self.endcap:
+                data_list.append(self.process_one_entry(masked_entry, pd_idx))
             else:
-                y = torch.tensor(0 if entry.y <= 0 else 1, dtype=torch.float).view(-1, 1)
+                entry_pos_endcap, entry_neg_endcap = {}, {}
+                pos_endcap_idx = masked_entry['mu_hit_endcap'] == 1
+                neg_endcap_idx = masked_entry['mu_hit_endcap'] == -1
 
-            intra_level_edges, inter_level_edges, virtual_edges = Tau3MuDataset.build_graph(entry, self.add_self_loops)
+                for k, v in masked_entry.items():
+                    if isinstance(v, np.ndarray) and 'gen' not in k and k != 'y' and 'L1' not in k:
+                        entry_pos_endcap[k] = v[pos_endcap_idx]
+                        entry_neg_endcap[k] = v[neg_endcap_idx]
+                    else:
+                        entry_pos_endcap[k] = v
+                        entry_neg_endcap[k] = v
+                    entry_pos_endcap['n_mu_hit'] = pos_endcap_idx.sum().item()
+                    entry_neg_endcap['n_mu_hit'] = neg_endcap_idx.sum().item()
 
-            intra_level_edge_features = Tau3MuDataset.get_edge_features(entry, intra_level_edges, self.edge_feature_names, for_virtual_edges=False)
-            inter_level_edge_features = Tau3MuDataset.get_edge_features(entry, inter_level_edges, self.edge_feature_names, for_virtual_edges=False)
-            virtual_edge_features = Tau3MuDataset.get_edge_features(entry, virtual_edges, self.edge_feature_names, for_virtual_edges=True)
-            if not self.virtual_node:
-                virtual_edge_features = virtual_edges = torch.tensor([], dtype=torch.long)
+                if masked_entry['y'] == 1:
+                    if ((masked_entry['gen_tau_eta'] * entry_pos_endcap['mu_hit_sim_eta']) > 0).sum() == entry_pos_endcap['n_mu_hit']:
+                        entry_pos_endcap['y'] = 1
+                        entry_neg_endcap['y'] = 0
+                    else:
+                        assert ((masked_entry['gen_tau_eta'] * entry_neg_endcap['mu_hit_sim_eta']) > 0).sum() == entry_neg_endcap['n_mu_hit']
+                        entry_pos_endcap['y'] = 0
+                        entry_neg_endcap['y'] = 1
 
-            data_list.append(Data(x=x, y=y, num_nodes=x.shape[0], score_gt=score_gt,
-                                  intra_level_edge_index=intra_level_edges,
-                                  inter_level_edge_index=inter_level_edges,
-                                  virtual_edge_index=virtual_edges,
-                                  intra_level_edge_features=intra_level_edge_features,
-                                  inter_level_edge_features=inter_level_edge_features,
-                                  virtual_edge_features=virtual_edge_features))
+                for k in ['mu_hit_sim_theta', 'mu_hit_sim_eta', 'mu_hit_sim_z']:
+                    if k == 'mu_hit_sim_theta':
+                        if k in entry_pos_endcap.keys():
+                            entry_pos_endcap[k] = abs(entry_pos_endcap[k] - 90)
+                            entry_neg_endcap[k] = abs(entry_neg_endcap[k] - 90)
+                    elif k in ['mu_hit_sim_eta', 'mu_hit_sim_z']:
+                        if k in entry_pos_endcap.keys():
+                            entry_pos_endcap[k] = abs(entry_pos_endcap[k])
+                            entry_neg_endcap[k] = abs(entry_neg_endcap[k])
+
+                if pd_idx in idx_for_training:
+                    if np.random.random() > 0.5:
+                        data_list.append(self.process_one_entry(entry_pos_endcap, pd_idx))
+                        data_list_endcap.append(self.process_one_entry(entry_neg_endcap, pd_idx))
+                    else:
+                        data_list.append(self.process_one_entry(entry_neg_endcap, pd_idx))
+                        data_list_endcap.append(self.process_one_entry(entry_pos_endcap, pd_idx))
+                else:
+                    data_list.append(self.process_one_entry(entry_pos_endcap, pd_idx))
+                    data_list_endcap.append(self.process_one_entry(entry_neg_endcap, pd_idx))
+
         data, slices = self.collate(data_list)
         del data_list
 
+        if self.endcap:
+            torch.save(data_list_endcap, Path(self.processed_dir) / 'data_list_endcap.pt')
+            del data_list_endcap
+
         print('[INFO] Saving data.pt...')
-        torch.save((data, slices, idx_split), self.processed_paths[0])
+        torch.save((data, slices, idx_split, self.node_feature_stat), self.processed_paths[0])
         yaml.dump(self.config, open(Path(self.processed_dir) / 'data_config.yml', 'w'))
         (Path(self.processed_dir) / 'data_md5.txt').open('w').write(Tau3MuDataset.md5sum(data, slices, idx_split, True))
 
         if self.visz:
             del data
             print('[INFO] Saving all_entries.pt...')
-            torch.save((df, self.node_feature_stat), Path(self.processed_dir) / 'all_entries.pt')
+            torch.save(df, Path(self.processed_dir) / 'all_entries.pt')
+
+    def process_one_entry(self, entry, pd_idx=-1):
+        if self.radius:
+            eta, phi = entry['mu_hit_sim_eta'], np.deg2rad(entry['mu_hit_sim_phi'])
+        if self.normalize:
+            entry = Tau3MuDataset.z_score_with_missing_values(entry, self.node_feature_stat)
+
+        x, score_gt = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node, self.one_hot, self.run_type)
+
+        if self.run_type == 'regress':
+            y = torch.tensor(entry['y'], dtype=torch.float).view(-1, 9)
+        else:
+            y = torch.tensor(0 if entry['y'] <= 0 else 1, dtype=torch.float).view(-1, 1)
+
+        intra_level_edges, inter_level_edges, virtual_edges = Tau3MuDataset.build_graph(entry, self.add_self_loops)
+        if self.radius:
+            coors = torch.tensor(np.stack((eta, phi)).T)
+            if coors.shape[0] == 0:
+                edge_index = intra_level_edges
+            else:
+                edge_index = radius_graph(coors, r=self.radius, loop=True)
+            edge_features = Tau3MuDataset.get_edge_features(entry, edge_index, self.edge_feature_names,
+                                                            for_virtual_edges=False)
+            virtual_edge_features = Tau3MuDataset.get_edge_features(entry, virtual_edges, self.edge_feature_names,
+                                                                    for_virtual_edges=True)
+
+            edge_index = torch.cat((edge_index, virtual_edges), dim=1)
+            edge_attr = torch.cat((edge_features, virtual_edge_features), dim=0)
+
+            return Data(x=x, y=y, num_nodes=x.shape[0], score_gt=score_gt,
+                        pd_idx=torch.tensor(pd_idx, dtype=torch.float).view(-1, 1),
+                        edge_index=edge_index, edge_attr=edge_attr)
+        else:
+            intra_level_edge_features = Tau3MuDataset.get_edge_features(entry, intra_level_edges, self.edge_feature_names, for_virtual_edges=False)
+            inter_level_edge_features = Tau3MuDataset.get_edge_features(entry, inter_level_edges, self.edge_feature_names, for_virtual_edges=False)
+            virtual_edge_features = Tau3MuDataset.get_edge_features(entry, virtual_edges, self.edge_feature_names, for_virtual_edges=True)
+            if not self.virtual_node:
+                virtual_edge_features = virtual_edges = torch.tensor([], dtype=torch.long)
+
+            return Data(x=x, y=y, num_nodes=x.shape[0], score_gt=score_gt,
+                        pd_idx=torch.tensor(pd_idx, dtype=torch.float).view(-1, 1),
+                        intra_level_edge_index=intra_level_edges,
+                        inter_level_edge_index=inter_level_edges,
+                        virtual_edge_index=virtual_edges,
+                        intra_level_edge_features=intra_level_edge_features,
+                        inter_level_edge_features=inter_level_edge_features,
+                        virtual_edge_features=virtual_edge_features)
 
     @staticmethod
-    def mask_hits(df, idx, entry: pd.Series, conditions: dict) -> Union[pd.Series, None]:
+    def mask_hits(df, entry: pd.Series, conditions: dict) -> dict:
+        mask = np.ones(entry.n_mu_hit, dtype=bool)
         for k, v in conditions.items():
             k = k.split('-')[1]
-            if isinstance(entry[k], np.ndarray):
-                mask = np.argwhere(eval('entry.' + k + v))
-                entry.n_mu_hit = mask.shape[0]
-                df.at[idx, 'n_mu_hit'] = entry.n_mu_hit
-                for key, value in entry.items():
-                    if isinstance(value, np.ndarray) and 'gen' not in key and key != 'y':
-                        entry[key] = value[mask].reshape(-1)
-                        df.at[idx, key] = entry[key]
-        return entry
+            assert isinstance(getattr(entry, k), np.ndarray)
+            mask *= eval('entry.' + k + v)
+
+        masked_entry = {'n_mu_hit': mask.sum()}
+        df.at[entry.Index, 'n_mu_hit'] = masked_entry['n_mu_hit']
+        new_hit_order = np.arange(masked_entry['n_mu_hit'])
+        np.random.shuffle(new_hit_order)
+
+        for k in entry._fields:
+            value = getattr(entry, k)
+            if isinstance(value, np.ndarray) and 'gen' not in k and k != 'y' and 'L1' not in k:
+                masked_entry[k] = value[mask].reshape(-1)  #[new_hit_order]
+                df.at[entry.Index, k] = masked_entry[k]
+            else:
+                if k != 'n_mu_hit':
+                    masked_entry[k] = value
+        return masked_entry
 
     @staticmethod
     def groupby_station(stations: np.ndarray) -> dict:
@@ -175,7 +267,7 @@ class Tau3MuDataset(InMemoryDataset):
         return list(product([virtual_node_id], real_node_ids)) + list(product(real_node_ids, [virtual_node_id]))
 
     @staticmethod
-    def get_node_features(entry, feature_names, virtual_node, one_hot, run_type) -> Tuple:
+    def get_node_features(entry: dict, feature_names, virtual_node, one_hot, run_type) -> Tuple:
         feature_names = feature_names[:]
         one_hot_vec = None
         if one_hot:
@@ -202,7 +294,7 @@ class Tau3MuDataset(InMemoryDataset):
         return torch.tensor(features, dtype=torch.float), score_gt
 
     @staticmethod
-    def get_edge_features(entry: pd.Series, edges: Tensor, feature_names: List[str], for_virtual_edges: bool) -> Tensor:
+    def get_edge_features(entry: dict, edges: Tensor, feature_names: List[str], for_virtual_edges: bool) -> Tensor:
         if edges.shape == (0,):
             return torch.tensor([])
 
@@ -215,12 +307,12 @@ class Tau3MuDataset(InMemoryDataset):
         return features[edges[0]] - features[edges[1]]
 
     @staticmethod
-    def build_graph(entry: pd.Series, add_self_loops: bool) -> List[Tensor]:
-        dim = entry.n_mu_hit
+    def build_graph(entry: dict, add_self_loops: bool) -> List[Tensor]:
+        dim = entry['n_mu_hit']
         virtual_node_id = dim
         real_node_ids = [i for i in range(dim)]
 
-        station2hitids = Tau3MuDataset.groupby_station(entry.mu_hit_station)
+        station2hitids = Tau3MuDataset.groupby_station(entry['mu_hit_station'])
 
         intra_level_edges = []
         for value in station2hitids.values():
@@ -274,7 +366,7 @@ class Tau3MuDataset(InMemoryDataset):
     def get_df(self, dfs):
         for k, v in dfs.items():
             for key in v.keys():
-                if 'gen' not in key and key not in self.node_feature_names and key not in ['n_mu_hit', 'mu_hit_station', 'mu_hit_neighbor']:
+                if 'gen' not in key and key not in self.node_feature_names and key not in ['n_mu_hit', 'mu_hit_station', 'mu_hit_neighbor', 'mu_hit_endcap']:
                     v.drop(key, inplace=True, axis=1)
 
         neg250 = dfs['MinBiasPU250_MTD']
@@ -295,7 +387,7 @@ class Tau3MuDataset(InMemoryDataset):
         if self.normalize:
             print('[INFO] Normalizing features...')
             assert self.conditions['1-mu_hit_station'] == '==1'
-            assert len(self.node_feature_names) == 8
+            # assert len(self.node_feature_names) == 8
             self.node_feature_stat = Tau3MuDataset.z_score(neg200, self.node_feature_names)
 
         join = 'outer' if self.visz else 'inner'
@@ -471,16 +563,16 @@ class Tau3MuDataset(InMemoryDataset):
             neg_valid_idx = mixed_pos_idx[n_train_neg:n_train_neg + n_valid_neg]
             neg_test_idx = mixed_pos_idx[n_train_neg + n_valid_neg:]
         elif run_type == 'da_eval':
-            # train_loader: test_pos200 & test_pos200
-            # valid_loader: test_pos200 & neg250
+            # train_loader: test_pos200 & test_neg200
+            # valid_loader: pos0 & test_neg200
             # test_loader:  test_pos200 & neg140
 
             pos_train_idx = pos200_idx
-            pos_valid_idx = pos200_idx
+            pos_valid_idx = pos0_idx
             pos_test_idx = pos200_idx
 
             neg_train_idx = neg200_idx
-            neg_valid_idx = neg250_idx
+            neg_valid_idx = neg200_idx
             neg_test_idx = neg140_idx
         elif run_type == 'regress':
             pos0_idx = np.argwhere(df['type'].to_numpy() == 'pos0').reshape(-1)
@@ -527,7 +619,7 @@ class Tau3MuDataset(InMemoryDataset):
         return node_feature_stat
 
     @staticmethod
-    def z_score_with_missing_values(entry, node_feature_stat: dict):
+    def z_score_with_missing_values(entry: dict, node_feature_stat: dict):
         for fn, stat in node_feature_stat.items():
             missing_value_idx = entry[fn] == -99
             entry[fn] = (entry[fn] - stat['mu']) / stat['sigma']
