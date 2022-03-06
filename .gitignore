@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 .DS_Store
 processed - Copy/
+.vscode/
 
 .idea/**/workspace.xml
 .idea/**/tasks.xml
