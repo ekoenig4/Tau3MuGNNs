@@ -3,7 +3,7 @@ import os
 import yaml
 import numpy as np
 from tqdm import tqdm
-from main import Main
+from train_gnn import Main
 import seaborn as sns
 from pathlib import Path
 import matplotlib.pyplot as plt

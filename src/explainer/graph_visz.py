@@ -7,7 +7,7 @@ from tqdm import tqdm
 import numpy as np
 import networkx as nx
 import seaborn as sns
-from main import Main
+from train_gnn import Main
 from pathlib import Path
 import matplotlib.pyplot as plt
 

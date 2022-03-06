@@ -29,116 +29,44 @@ from tensorboard.compat.proto.tensor_shape_pb2 import TensorShapeProto
 from tensorboard.compat.proto.summary_pb2 import Summary
 
 
-def get_log_path_and_save_metadata(config, processed_data_dir, log_name):
-    log_path = config['model']['model_name'] + '-' + datetime.now().strftime("%m_%d_%Y-%H_%M_%S") + '-' + log_name
-    log_path = Path(config['data']['log_dir']) / log_path
-    log_path.mkdir(exist_ok=False)
-
-    src_dir = Path(config['data']['src_dir'])
-    yaml.dump(config, open(Path(log_path) / 'config.yml', 'w'))
-    shutil.copy(src_dir / 'model.py', log_path / 'model.py')
-    shutil.copy(src_dir / 'utils/dataset.py', log_path / 'dataset.py')
-    shutil.copytree(src_dir / 'layers', log_path / 'layers')
-
-    shutil.copy(Path(processed_data_dir) / 'data_md5.txt', log_path / 'data_md5.txt')
-    return log_path
-
-
-def print_splits_and_acc_lower_bound(dataset, run_type):
-    print('[Splits]')
-    [print(f'    {k}: {len(v)}') for k, v in dataset.idx_split.items()]
-
-    if run_type == 'regress':
-        pass
+def log_epoch(epoch, phase, loss_dict, clf_logits, clf_labels, batch, writer=None):
+    desc = f'[Epoch: {epoch}]: {phase}........., ' if batch else f'[Epoch: {epoch}]: {phase} finished, '
+    for k, v in loss_dict.items():
+        if not batch:
+            writer.add_scalar(f'{phase}/{k}', v, epoch)
+        desc += f'{k}: {v:.3f}, '
+    if batch:
+        return desc
     else:
-        _, (n0, n1) = np.unique(dataset.data.y[dataset.idx_split['train']], return_counts=True)
-        lb = n0 / (n0 + n1)
-        print(f'[INFO] Training accuracy lower bound: {max(1 - lb, lb): .3f}')
+        assert writer is not None
 
+    clf_probs = clf_logits.sigmoid()
 
-def get_best_res(res):
-    best_res = {}
-
-    max_recall_epoch = np.argmax(np.array(res['valid_res'])[:, 2])
-    for phase, scores in res.items():
-        best_res[f'Hparams/{phase}/loss'] = np.array(scores)[:, 0][max_recall_epoch]
-        best_res[f'Hparams/{phase}/auroc'] = np.array(scores)[:, 1][max_recall_epoch]
-        best_res[f'Hparams/{phase}/recall_on_max_fpr'] = np.array(scores)[:, 2][max_recall_epoch]
-    return best_res
-
-
-def log_data_config(config):
-    interested_config = {}
-    for k, v in config.items():
-        if isinstance(v, bool):
-            interested_config[k] = v
-
-        elif k == 'conditions':
-            for feature, condition in v.items():
-                interested_config[feature + ' ' + condition] = True
-    return interested_config
-
-
-def log_batch(loss_dict, phase, epoch, step, writer, lr):
-    loss_desc = ''
-    for loss_name, loss_value in loss_dict.items():
-        writer.add_scalar(f'Batch/{phase}/{loss_name}', loss_value, step)
-        loss_desc += f'{loss_name}: {loss_value: .3f}, '
-
-    if lr is not None and phase == 'train':
-        writer.add_scalar(f'Stats/lr_schedule', lr, step)
-
-    desc = f'[Epoch: {epoch}]: {phase}........., ' + loss_desc + f'....................................'
-    return desc
-
-
-# TODO: add_pr_curve will only update after testing the model
-def log_epoch(probs, targets, all_batch_losses, auroc_max_fpr, writer, phase, epoch, run_type):
-
-    loss_desc = ''
-    for loss_name in all_batch_losses[0].keys():
-        current_loss = 0
-        cnt = 0
-        for i in range(len(all_batch_losses)):
-            if all_batch_losses[i][loss_name] != 0:
-                current_loss += all_batch_losses[i][loss_name]
-                cnt += 1
-        current_loss /= cnt
-
-        writer.add_scalar(f'{phase}/{loss_name}', current_loss, epoch)
-        loss_desc += f'{loss_name}: {current_loss: .3f}, '
-
-        if 'total' in loss_name:
-            total_loss = current_loss
-
-    if run_type == 'regress':
-        desc = f'[Epoch: {epoch}]: {phase} finished, ' + loss_desc
-        return desc, total_loss, 0, 0
-
-    auroc = metrics.roc_auc_score(targets, probs)
-    partial_auroc = metrics.roc_auc_score(targets, probs, max_fpr=auroc_max_fpr)
-    fpr, recall, thres = metrics.roc_curve(targets, probs)
-    indices = get_idx_for_interested_fpr(fpr, [auroc_max_fpr, auroc_max_fpr/10])
+    auroc = metrics.roc_auc_score(clf_labels, clf_probs)
+    partial_auroc = metrics.roc_auc_score(clf_labels, clf_probs, max_fpr=0.001)
+    fpr, recall, thres = metrics.roc_curve(clf_labels, clf_probs)
+    indices = get_idx_for_interested_fpr(fpr, [0.001, 0.001/10])
 
     writer.add_scalar(f'{phase}/AUROC/', auroc, epoch)
     writer.add_scalar(f'{phase}/Partial_AUROC/', partial_auroc, epoch)
     writer.add_scalar(f'{phase}/recall_on_max_fpr/', recall[indices[0]], epoch)
     writer.add_scalar(f'{phase}/recall_on_max_fpr_over_10/', recall[indices[1]], epoch)
-    writer.add_roc_curve(f'ROC_Curve/{phase}', targets, probs, epoch)
-    writer.add_roc_curve(f'TriggerRate_Curve/{phase}', targets, probs, epoch, to_trigger_rate=True)
+    writer.add_roc_curve(f'ROC_Curve/{phase}', clf_labels, clf_probs, epoch)
+    writer.add_roc_curve(f'TriggerRate_Curve/{phase}', clf_labels, clf_probs, epoch, to_trigger_rate=True)
 
     fig = PlotROC(fpr=fpr*31000, tpr=recall, roc_auc=auroc).plot().figure_  # kHz
     writer.add_figure(f'TriggerRate/{phase}', fig, epoch)
 
-    cm = metrics.confusion_matrix(targets, y_pred=probs > thres[indices[0]], normalize=None)
+    cm = metrics.confusion_matrix(clf_labels, y_pred=clf_probs > thres[indices[0]], normalize=None)
     fig = PlotCM(confusion_matrix=cm, display_labels=['Neg', 'Pos']).plot(cmap=plt.cm.Blues).figure_
     writer.add_figure(f'Confusion Matrix - max_fpr/{phase}', fig, epoch)
 
-    cm = metrics.confusion_matrix(targets, y_pred=probs > thres[indices[1]], normalize=None)
+    cm = metrics.confusion_matrix(clf_labels, y_pred=clf_probs > thres[indices[1]], normalize=None)
     fig = PlotCM(confusion_matrix=cm, display_labels=['Neg', 'Pos']).plot(cmap=plt.cm.Blues).figure_
     writer.add_figure(f'Confusion Matrix - max_fpr_over_10/{phase}', fig, epoch)
-    desc = f'[Epoch: {epoch}]: {phase} finished, ' + loss_desc + f'auroc: {auroc: .3f}, recall@maxfpr: {recall[indices[0]]: .3f}'
-    return desc, total_loss, auroc, recall[indices[0]]
+
+    desc += f'auroc: {auroc: .3f}, recall@maxfpr: {recall[indices[0]]: .3f}'
+    return desc, auroc, recall[indices[0]].item(), loss_dict['total']
 
 
 def get_idx_for_interested_fpr(fpr, interested_fpr):
@@ -251,7 +179,7 @@ class PlotROC(metrics.RocCurveDisplay):
 
         self.line_ = ax.plot(self.fpr, self.tpr, **line_kwargs)[0]
         ax.set_xlabel("Trigger Rate (kHz)")
-        ax.set_ylabel("Trigger Acceptance Rate")
+        ax.set_ylabel("Signal Efficiency")
         ax.set_xlim(0, 100)  # 0 - 100 kHz
 
         if "label" in line_kwargs:

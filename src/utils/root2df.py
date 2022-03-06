@@ -1,11 +1,3 @@
-# -*- coding: utf-8 -*-
-
-"""
-Created on 2021/4/10
-
-@author: Siqi Miao
-"""
-
 # Modified from https://github.com/cms-p2l1trigger-tau3mu/Tau3MuGNNs/blob/master/ProcessROOTFiles.py
 # The code may only work perfectly on x86_64.
 
@@ -55,7 +47,10 @@ class Root2Df(object):
         for sample in self.signalsamples:
             self.process_root_file(self.data_dir / sample, self.signalvariables, pos_max)
 
-    def read_df(self):
+    def read_df(self, setting):
+        if 'mix' not in setting:
+            self.signalsamples.remove('DsTau3muPU0_MTD.root')
+
         res = {}
         for sample in (self.backgroundsamples + self.signalsamples):
             sample = self.data_dir / sample

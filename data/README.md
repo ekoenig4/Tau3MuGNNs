@@ -1,1 +1,0 @@
-Put raw data like .root, .cfg and .pkl files in ./raw/. Then, the processed .pt data will be stored in ./processed/ automatically.
