@@ -41,7 +41,7 @@ eval:
 
 optimizer:
   resume: False                  # Resume training from a previous checkpoint?
-  lr: 4.0e-4                     # Learning rate
+  lr: 1.0e-3                     # Learning rate
   batch_size: 256                # Batch size
   epochs: 500                    # Number of epochs to train for
   focal_loss: True               # Use focal loss for the loss function? Otherwise, use binary cross entropy

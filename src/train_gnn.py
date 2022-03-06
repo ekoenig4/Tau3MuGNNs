@@ -110,6 +110,4 @@ def main():
 
 
 if __name__ == '__main__':
-    import os
-    os.chdir('/scratch3/miao61/projects/Tau3Mu/Tau3MuGNNs/src')
     main()

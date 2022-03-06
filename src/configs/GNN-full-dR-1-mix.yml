@@ -40,7 +40,7 @@ eval:
 
 optimizer:
   resume: False
-  lr: 4.0e-4
+  lr: 1.0e-3
   batch_size: 256
   epochs: 500
   focal_loss: True
