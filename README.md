@@ -25,6 +25,7 @@ Since our repo is private, we need to setup a ssh key for GitHub. [Here](https:/
 Then, clone the repo:
 ```
 git clone git@github.com:cms-p2l1trigger-tau3mu/Tau3MuGNNs.git
+cd Tau3MuGNNs/
 git checkout gnn-siqi
 ```
 
@@ -69,6 +70,7 @@ The branch `master` branch is created by Daniel to process `.root` files. I use 
 To get the code, one can do:
 ```
 git clone git@github.com:cms-p2l1trigger-tau3mu/Tau3MuGNNs.git
+cd Tau3MuGNNs/
 git checkout gnn-siqi
 ```
 
@@ -119,6 +121,12 @@ One thing to notice is that if you have had processed files for a specific setti
 Standard output provides basic training logs, while more detailed logs and interpretation visualizations can be found on tensorboard:
 ```
 tensorboard --logdir=$ProjectDir/data/logs
+```
+
+In case you are using Gilbreth, you can use the following command to open tensorboard:
+```
+unset PYTHONPATH
+tensorboard --logdir=$ProjectDir/data/logs --bind_all
 ```
 
 
