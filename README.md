@@ -104,7 +104,7 @@ python train_gnn.py --setting [setting_name] --cuda [GPU_id]
 
 We provide detailed documentation for each option in the setting in `./src/configs/GNN-full-dR-1.yml`. One can play with those options and try new settings.
 
- One thing to notice is that if you have had processed files for a specific setting, even then you change some options in the config file, the processed files will not be changed in the next run. So, if you want to change the options in a config file, you need to delete the existing processed files first.
+One thing to notice is that if you have had processed files for a specific setting, even then you change some options in the config file, the processed files will not be changed in the next run. So, if you want to change the options in a config file, you need to delete the corresponding processed files first. This is because the code will search `.pt` files given the `setting_name`; if it finds any `.pt` files under `$ProjectDir/data/processed_[setting_name]`, it will assume that the processed files for the specified setting are already there and will not re-process data with the new options.
 
 # Workflow of the code
 
