@@ -152,7 +152,7 @@ class Writer(SummaryWriter):
         fpr = fp / np.maximum(_MINIMUM_COUNT, fp + tn)
 
         if to_trigger_rate:
-            fpr = fpr * 310  # 100 kHz
+            fpr = fpr * 310  # unit: 100 kHz
 
         return np.stack((tp, fp, tn, fn, recall, fpr))
 

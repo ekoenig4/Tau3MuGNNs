@@ -39,6 +39,7 @@ class Tau3MuDataset(InMemoryDataset):
         self.radius = data_config.get('radius', False)
         self.virtual_node = data_config.get('virtual_node', False)
         self.augdR = data_config.get('augdR', False)
+        self.filter_soft_mu = data_config.get('filter_soft_mu', False)
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
         self.data, self.slices, self.idx_split = torch.load(self.processed_paths[0])
@@ -126,9 +127,14 @@ class Tau3MuDataset(InMemoryDataset):
             if pos0 is not None:
                 pos0 = pos0[pos0.n_gen_tau == 1].reset_index(drop=True)
 
-        if pos0 is not None:
+        if self.filter_soft_mu:
+            pos200 = pos200[pos200.apply(lambda x: Tau3MuDataset.filter_mu_by_pt_eta(x), axis=1)].reset_index(drop=True)
+            if pos0 is not None:
+                pos0 = pos0[pos0.apply(lambda x: Tau3MuDataset.filter_mu_by_pt_eta(x), axis=1)].reset_index(drop=True)
+
+        if pos0 is not None and len(pos0) > 100000:
             print('[INFO] Sampling from pos0 to fasten processing & training...')
-            pos0 = pos0.sample(len(pos200)).reset_index(drop=True)
+            pos0 = pos0.sample(100000).reset_index(drop=True)
 
         if 'mix' in self.setting:
             if 'check' in self.setting:
@@ -139,8 +145,27 @@ class Tau3MuDataset(InMemoryDataset):
         else:
             pos, neg = pos200, neg200
 
+        if 'half' in self.setting:
+            min_pos_neg_ratio = len(pos) / (len(neg) * 2)
+        else:
+            min_pos_neg_ratio = len(pos) / len(neg)
+        print(f'[INFO] min_pos_neg_ratio: {min_pos_neg_ratio}')
+
         pos['y'], neg['y'] = 1, 0
+        assert self.pos_neg_ratio >= min_pos_neg_ratio, f'min_pos_neg_ratio = {min_pos_neg_ratio}! Now pos_neg_ratio = {self.pos_neg_ratio}!'
         return pd.concat((pos, neg), join='outer', ignore_index=True)
+
+    @staticmethod
+    def filter_mu_by_pt_eta(x):
+        return ((x['mu_hit_station'] <= 4).sum() >= 1)
+        # return ((x['mu_hit_station'] <= 4).sum() >= 1)  # good-4
+        # return ((x['mu_hit_station'] == 1).sum() >= 3)  # bad-1
+        # return ((x['mu_hit_station'] <= 1).sum() >= 1)  # bad-1
+        # return ((x['mu_hit_station'] <= 2).sum() >= 0)  # good-2 bad-1
+        # return ((x['mu_hit_station'] <= 2).sum() >= 1)  # good
+        # return ((x['mu_hit_station'] <= 2).sum() >= 3)  # good
+        # return ((x['gen_mu_pt'] > 0.5).sum() == 3)
+        # return ((x['gen_mu_pt'] > 0.5).sum() == 3) and ((abs(x['gen_mu_eta']) < 2.8).sum() == 3) and ((abs(x['gen_mu_eta']) > 1.2).sum() == 3)  # good
 
     @staticmethod
     def get_intra_station_edges(entry, hit_id, radius):
@@ -250,7 +275,7 @@ class Tau3MuDataset(InMemoryDataset):
         np.random.shuffle(pos_idx)
         np.random.shuffle(neg_idx)
 
-        assert len(pos_idx) <= len(neg_idx) * pos2neg
+        assert len(pos_idx) <= len(neg_idx) * pos2neg, 'The number of negative samples is not enough given the pos_neg_ratio!'
         n_train_pos, n_valid_pos = int(splits['train'] * len(pos_idx)), int(splits['valid'] * len(pos_idx))
         n_train_neg, n_valid_neg = int(n_train_pos / pos2neg), int(n_valid_pos / pos2neg)
 
@@ -333,7 +358,7 @@ class Tau3MuDataset(InMemoryDataset):
         masked_entry = {'n_mu_hit': mask.sum()}
         for k in entry._fields:
             value = getattr(entry, k)
-            if isinstance(value, np.ndarray) and 'gen' not in k and k != 'y' and 'L1' not in k:
+            if isinstance(value, np.ndarray) and 'gen' not in k and k != 'y':
                 assert value.shape[0] == entry.n_mu_hit
                 masked_entry[k] = value[mask].reshape(-1)
             else:
