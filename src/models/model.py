@@ -48,7 +48,7 @@ class Model(nn.Module):
 
         self.fc_out = nn.Linear(self.out_channels, 1)
 
-    def forward(self, x, edge_index, edge_attr, batch, data):
+    def forward(self, x, edge_index, edge_attr, batch, data, edge_atten=None):
         v_idx, v_emb = (data.ptr[1:] - 1, []) if self.virtual_node else (None, None)
         x = self.node_encoder(x)
         edge_attr = self.edge_encoder(edge_attr)
@@ -59,7 +59,7 @@ class Model(nn.Module):
         for i in range(self.n_layers):
             identity = x
 
-            x = self.convs[i](x, edge_index, edge_attr)
+            x = self.convs[i](x, edge_index, edge_attr=edge_attr, edge_atten=edge_atten)
             x = self.mlps[i](x, batch)
 
             if self.virtual_node:
@@ -84,6 +84,30 @@ class Model(nn.Module):
             pool_out = self.pool(x, batch)
         out = self.fc_out(pool_out)
         return out
+
+    def get_emb(self, x, edge_index, edge_attr, batch, data, edge_atten=None):
+        v_idx, v_emb = (data.ptr[1:] - 1, []) if self.virtual_node else (None, None)
+        x = self.node_encoder(x)
+        edge_attr = self.edge_encoder(edge_attr)
+        if self.bn_input:
+            x = self.bn_node_feature(x)
+            edge_attr = self.bn_edge_feature(edge_attr)
+
+        for i in range(self.n_layers):
+            identity = x
+
+            x = self.convs[i](x, edge_index, edge_attr=edge_attr, edge_atten=edge_atten)
+            x = self.mlps[i](x, batch)
+
+            if self.virtual_node:
+                if i == 0:
+                    hx, cx = identity[v_idx], torch.zeros_like(identity[v_idx])
+                if self.readout == 'lstm':
+                    hx, cx = self.lstm(x[v_idx], (hx, cx))
+                elif self.readout == 'jknet':
+                    v_emb.append(x[v_idx])
+            x += identity
+        return x
 
 
 class BatchSequential(nn.Sequential):

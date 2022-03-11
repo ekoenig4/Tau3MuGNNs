@@ -5,7 +5,8 @@ from tqdm import tqdm
 from pathlib import Path
 
 from models import Model
-from utils import Criterion, Writer, log_epoch, load_checkpoint, save_checkpoint, set_seed, get_data_loaders
+from utils import Criterion, Writer, log_epoch, set_seed, get_data_loaders
+from explainer import GSAT, ExtractorMLP
 
 
 class Tau3MuGNNs:
@@ -17,60 +18,65 @@ class Tau3MuGNNs:
         self.writer = Writer(log_path)
 
         self.data_loaders, x_dim, edge_attr_dim, _ = get_data_loaders(setting, config['data'], config['optimizer']['batch_size'])
-        self.model = Model(x_dim, edge_attr_dim, config['data']['virtual_node'], config['model'])
-        self.model.to(self.device)
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config['optimizer']['lr'])
-        self.criterion = Criterion(config['optimizer'])
-        print(f'[INFO] Number of trainable parameters: {sum(p.numel() for p in self.model.parameters())}')
+
+        clf = Model(x_dim, edge_attr_dim, config['data']['virtual_node'], config['model']).to(self.device)
+        extractor = ExtractorMLP(config['model']['out_channels'], learn_edge_att=False).to(device)
+        optimizer = torch.optim.AdamW(list(extractor.parameters()) + list(clf.parameters()), lr=config['optimizer']['lr'], weight_decay=3.0e-6)
+        criterion = Criterion(config['optimizer'])
+
+        self.gsat = GSAT(clf, extractor, criterion, optimizer, learn_edge_att=False, final_r=0.5)
+        print(f'[INFO] Number of trainable parameters: {sum(p.numel() for p in self.gsat.parameters())}')
 
     @torch.no_grad()
-    def eval_one_batch(self, data):
-        self.model.eval()
+    def eval_one_batch(self, data, epoch):
+        self.gsat.extractor.eval()
+        self.gsat.clf.eval()
 
-        clf_logits = self.model(x=data.x, edge_index=data.edge_index, edge_attr=data.edge_attr, batch=data.batch, data=data)
-        loss, loss_dict = self.criterion(clf_logits.sigmoid(), data.y)
-        return loss_dict, clf_logits.data.cpu()
+        edge_att, loss, loss_dict, clf_logits, raw_att = self.gsat.forward_pass(data, epoch, training=False)
+        return loss_dict, clf_logits.data.cpu(), edge_att.data.cpu().reshape(-1), raw_att.data.cpu().reshape(-1)
 
-    def train_one_batch(self, data):
-        self.model.train()
+    def train_one_batch(self, data, epoch):
+        self.gsat.extractor.train()
+        self.gsat.clf.train()
 
-        clf_logits = self.model(x=data.x, edge_index=data.edge_index, edge_attr=data.edge_attr, batch=data.batch, data=data)
-        loss, loss_dict = self.criterion(clf_logits.sigmoid(), data.y)
-
-        self.optimizer.zero_grad()
+        edge_att, loss, loss_dict, clf_logits, raw_att = self.gsat.forward_pass(data, epoch, training=True)
+        self.gsat.optimizer.zero_grad()
         loss.backward()
-        self.optimizer.step()
-        return loss_dict, clf_logits.data.cpu()
+        self.gsat.optimizer.step()
+        return loss_dict, clf_logits.data.cpu(), edge_att.data.cpu().reshape(-1), raw_att.data.cpu().reshape(-1)
 
     def run_one_epoch(self, data_loader, epoch, phase):
         loader_len = len(data_loader)
         run_one_batch = self.train_one_batch if phase == 'train' else self.eval_one_batch
         phase = 'test ' if phase == 'test' else phase  # align tqdm desc bar
 
-        all_loss_dict, all_clf_logits, all_clf_labels = {}, [], []
+        all_loss_dict, all_clf_logits, all_clf_labels, all_exp_labels, all_exp_probs = {}, [], [], [], []
         pbar = tqdm(data_loader, total=loader_len)
         for idx, data in enumerate(pbar):
-            loss_dict, clf_logits = run_one_batch(data.to(self.device))
+            loss_dict, clf_logits, _, att = run_one_batch(data.to(self.device), epoch)  # node-level att
+
+            mask = torch.ones_like(att).bool()
+            mask[data.ptr[1:] - 1] = False
+            att = att[mask]
 
             desc = log_epoch(epoch, phase, loss_dict, clf_logits, data.y.data.cpu(), batch=True)
             for k, v in loss_dict.items():
                 all_loss_dict[k] = all_loss_dict.get(k, 0) + v
             all_clf_logits.append(clf_logits), all_clf_labels.append(data.y.data.cpu())
+            all_exp_labels.append(data.node_label.data.cpu().reshape(-1)), all_exp_probs.append(att)
 
             if idx == loader_len - 1:
                 all_clf_logits, all_clf_labels = torch.cat(all_clf_logits), torch.cat(all_clf_labels)
+                all_exp_labels, all_exp_probs = torch.cat(all_exp_labels), torch.cat(all_exp_probs)
                 for k, v in all_loss_dict.items():
                     all_loss_dict[k] = v / loader_len
-                desc, auroc, recall, avg_loss = log_epoch(epoch, phase, all_loss_dict, all_clf_logits, all_clf_labels, False, self.writer)
+                desc, auroc, recall, avg_loss = log_epoch(epoch, phase, all_loss_dict, all_clf_logits, all_clf_labels, False, self.writer, all_exp_probs, all_exp_labels)
             pbar.set_description(desc)
 
         return avg_loss, auroc, recall
 
     def train(self):
         start_epoch = 0
-        if self.config['optimizer']['resume']:
-            start_epoch = load_checkpoint(self.model, self.optimizer, self.log_path, self.device)
-
         best_val_recall = 0
         for epoch in range(start_epoch, self.config['optimizer']['epochs'] + 1):
             self.run_one_epoch(self.data_loaders['train'], epoch, 'train')
@@ -79,7 +85,6 @@ class Tau3MuGNNs:
                 valid_res = self.run_one_epoch(self.data_loaders['valid'], epoch, 'valid')
                 test_res = self.run_one_epoch(self.data_loaders['test'], epoch, 'test')
                 if valid_res[-1] > best_val_recall:
-                    save_checkpoint(self.model, self.optimizer, self.log_path, epoch)
                     best_val_recall, best_test_recall, best_epoch = valid_res[-1], test_res[-1], epoch
 
             self.writer.add_scalar('best/best_epoch', best_epoch, epoch)
@@ -110,6 +115,6 @@ def main():
 
 
 if __name__ == '__main__':
-    import os
-    os.chdir('./src')
+    # import os
+    # os.chdir('./src')
     main()

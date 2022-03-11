@@ -29,7 +29,7 @@ from tensorboard.compat.proto.tensor_shape_pb2 import TensorShapeProto
 from tensorboard.compat.proto.summary_pb2 import Summary
 
 
-def log_epoch(epoch, phase, loss_dict, clf_logits, clf_labels, batch, writer=None):
+def log_epoch(epoch, phase, loss_dict, clf_logits, clf_labels, batch, writer=None, exp_probs=None, exp_labels=None):
     desc = f'[Epoch: {epoch}]: {phase}........., ' if batch else f'[Epoch: {epoch}]: {phase} finished, '
     for k, v in loss_dict.items():
         if not batch:
@@ -66,6 +66,12 @@ def log_epoch(epoch, phase, loss_dict, clf_logits, clf_labels, batch, writer=Non
     writer.add_figure(f'Confusion Matrix - max_fpr_over_10/{phase}', fig, epoch)
 
     desc += f'auroc: {auroc: .3f}, recall@maxfpr: {recall[indices[0]]: .3f}'
+
+    if exp_probs is not None:
+        assert exp_labels is not None
+        exp_auroc = metrics.roc_auc_score(exp_labels, exp_probs)
+        writer.add_scalar(f'{phase}/Exp_AUROC/', exp_auroc, epoch)
+        desc += f', exp_auroc: {exp_auroc: .3f}'
     return desc, auroc, recall[indices[0]].item(), loss_dict['total']
 
 

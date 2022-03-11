@@ -46,7 +46,7 @@ class GENConv(MessagePassing):
             self.p.data.fill_(self.initial_p)
 
     def forward(self, x: Union[Tensor, OptPairTensor], edge_index: Adj,
-                edge_attr: OptTensor = None, size: Size = None) -> Tensor:
+                edge_attr: OptTensor = None, size: Size = None, edge_atten=None) -> Tensor:
         """"""
 
         if isinstance(x, Tensor):
@@ -62,12 +62,15 @@ class GENConv(MessagePassing):
                 assert x[0].size(-1) == edge_attr.size(-1)
 
         # propagate_type: (x: OptPairTensor, edge_attr: OptTensor)
-        out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size)
+        out = self.propagate(edge_index, x=x, edge_attr=edge_attr, size=size, edge_atten=edge_atten)
         return out
 
-    def message(self, x_j: Tensor, edge_attr: OptTensor) -> Tensor:
+    def message(self, x_j: Tensor, edge_attr: OptTensor, edge_atten=None) -> Tensor:
         msg = x_j if edge_attr is None else x_j + edge_attr
-        return F.relu(msg) + self.eps
+        msg = F.relu(msg) + self.eps
+        if edge_atten is not None:
+            msg = msg * edge_atten
+        return msg
 
     def aggregate(self, inputs: Tensor, index: Tensor,
                   dim_size: Optional[int] = None) -> Tensor:

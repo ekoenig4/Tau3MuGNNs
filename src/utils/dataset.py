@@ -105,7 +105,14 @@ class Tau3MuDataset(InMemoryDataset):
             edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, self.edge_feature_names, self.virtual_node, self.augdR)
             x = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node)
             y = torch.tensor(entry['y']).float().view(-1, 1)
-            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr)
+
+            node_label = None
+            if 'node_label' in entry:
+                if y.item() == 1:
+                    node_label = torch.tensor(entry['node_label']).float().view(-1, 1)
+                else:
+                    node_label = torch.zeros((x.shape[0], 1)).float() if not self.virtual_node else torch.zeros((x.shape[0] - 1, 1)).float()
+            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label)
         else:
             assert 'DT' in self.setting
             x = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node)
@@ -157,7 +164,7 @@ class Tau3MuDataset(InMemoryDataset):
 
     @staticmethod
     def filter_mu_by_pt_eta(x):
-        return ((x['mu_hit_station'] <= 4).sum() >= 1)
+        return ((x['mu_hit_station'] <= 2).sum() >= 2)
         # return ((x['mu_hit_station'] <= 4).sum() >= 1)  # good-4
         # return ((x['mu_hit_station'] == 1).sum() >= 3)  # bad-1
         # return ((x['mu_hit_station'] <= 1).sum() >= 1)  # bad-1
@@ -309,6 +316,7 @@ class Tau3MuDataset(InMemoryDataset):
                     continue
                 elif isinstance(v, int):  # accumulate n_mu_hit
                     assert k == 'n_mu_hit'
+                    entry['node_label'] = np.concatenate((np.zeros(noise_in_pos0.iloc[idx][k]), np.ones(v)))
                     entry[k] += noise_in_pos0.iloc[idx][k]
                 else:  # concat hit features
                     assert isinstance(v, np.ndarray)
