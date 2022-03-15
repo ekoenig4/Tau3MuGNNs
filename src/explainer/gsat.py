@@ -7,7 +7,7 @@ from torch_geometric.nn import InstanceNorm
 
 class GSAT(nn.Module):
 
-    def __init__(self, clf, extractor, criterion, optimizer, learn_edge_att=True, final_r=0.7, decay_interval=1, decay_r=0.1):
+    def __init__(self, clf, extractor, criterion, optimizer, learn_edge_att=True, final_r=0.7, decay_interval=10, decay_r=0.1, init_r=0.9):
         super().__init__()
         self.clf = clf
         self.extractor = extractor
@@ -19,11 +19,12 @@ class GSAT(nn.Module):
         self.final_r = final_r
         self.decay_interval = decay_interval
         self.decay_r = decay_r
+        self.init_r = init_r
 
     def __loss__(self, att, clf_logits, clf_labels, epoch):
         pred_loss, _ = self.criterion(clf_logits.sigmoid(), clf_labels)
 
-        r = self.get_r(self.decay_interval, self.decay_r, epoch, final_r=self.final_r)
+        r = self.get_r(self.decay_interval, self.decay_r, epoch, final_r=self.final_r, init_r=self.init_r)
         info_loss = (att * torch.log(att/r + 1e-6) + (1-att) * torch.log((1-att)/(1-r+1e-6) + 1e-6)).mean()
 
         loss = pred_loss + info_loss
@@ -44,7 +45,7 @@ class GSAT(nn.Module):
         else:
             edge_att = self.lift_node_att_to_edge_att(att, data.edge_index)
 
-        clf_logits = self.clf(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr, data=data, edge_atten=edge_att)
+        clf_logits = self.clf(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr, data=data, edge_atten=edge_att, node_atten=att)
         loss, loss_dict = self.__loss__(att, clf_logits, data.y, epoch)
         return edge_att, loss, loss_dict, clf_logits, att
 

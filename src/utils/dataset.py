@@ -164,7 +164,12 @@ class Tau3MuDataset(InMemoryDataset):
 
     @staticmethod
     def filter_mu_by_pt_eta(x):
-        return ((x['mu_hit_station'] <= 2).sum() >= 2)
+        # p = np.sqrt(x['gen_mu_e']**2 - 0.1057**2 + 1e-5)
+        # pt = x['gen_mu_pt']
+        # abs_eta = np.abs(x['gen_mu_eta'])
+        return ((x['mu_hit_station'] <= 2).sum() >= 3) and ((x['mu_hit_station'] <= 2).sum() <= 10)
+        # return ((p > 2.5).sum() == 3) and ((pt > 0.5).sum() == 3) and ((abs_eta < 2.8).sum() == 3) and ((x['mu_hit_station'] <= 2).sum() > 0)
+        # return ((x['mu_hit_station'] <= 2).sum() >= 2)
         # return ((x['mu_hit_station'] <= 4).sum() >= 1)  # good-4
         # return ((x['mu_hit_station'] == 1).sum() >= 3)  # bad-1
         # return ((x['mu_hit_station'] <= 1).sum() >= 1)  # bad-1
@@ -309,6 +314,7 @@ class Tau3MuDataset(InMemoryDataset):
         neg200 = neg200.loc[neg_idx[len(pos0):]].reset_index(drop=True)
 
         print('[INFO] Mixing data...')
+        # mixed_pos = noise_in_pos0
         mixed_pos = []
         for idx, entry in tqdm(pos0.iterrows(), total=len(pos0)):
             for k, v in entry.items():

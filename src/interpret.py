@@ -21,10 +21,10 @@ class Tau3MuGNNs:
 
         clf = Model(x_dim, edge_attr_dim, config['data']['virtual_node'], config['model']).to(self.device)
         extractor = ExtractorMLP(config['model']['out_channels'], learn_edge_att=False).to(device)
-        optimizer = torch.optim.AdamW(list(extractor.parameters()) + list(clf.parameters()), lr=config['optimizer']['lr'], weight_decay=3.0e-6)
+        optimizer = torch.optim.AdamW(list(extractor.parameters()) + list(clf.parameters()), lr=config['optimizer']['lr'])
         criterion = Criterion(config['optimizer'])
 
-        self.gsat = GSAT(clf, extractor, criterion, optimizer, learn_edge_att=False, final_r=0.5)
+        self.gsat = GSAT(clf, extractor, criterion, optimizer, learn_edge_att=False, final_r=0.3, decay_interval=10, init_r=0.8)
         print(f'[INFO] Number of trainable parameters: {sum(p.numel() for p in self.gsat.parameters())}')
 
     @torch.no_grad()
@@ -55,15 +55,19 @@ class Tau3MuGNNs:
         for idx, data in enumerate(pbar):
             loss_dict, clf_logits, _, att = run_one_batch(data.to(self.device), epoch)  # node-level att
 
-            mask = torch.ones_like(att).bool()
-            mask[data.ptr[1:] - 1] = False
-            att = att[mask]
+            if self.config['data']['virtual_node']:
+                mask = torch.ones_like(att).bool()
+                mask[data.ptr[1:] - 1] = False
+                att = att[mask]
+            exp_labels = data.node_label.data.cpu().reshape(-1) if data.get('node_label', None) is not None else torch.full_like(att, -1).long()
 
             desc = log_epoch(epoch, phase, loss_dict, clf_logits, data.y.data.cpu(), batch=True)
             for k, v in loss_dict.items():
                 all_loss_dict[k] = all_loss_dict.get(k, 0) + v
             all_clf_logits.append(clf_logits), all_clf_labels.append(data.y.data.cpu())
-            all_exp_labels.append(data.node_label.data.cpu().reshape(-1)), all_exp_probs.append(att)
+
+            pos_data_node_ids = (data.y[data.batch.reshape(-1)] == 1).reshape(-1)
+            all_exp_labels.append(exp_labels[pos_data_node_ids]), all_exp_probs.append(att[pos_data_node_ids])
 
             if idx == loader_len - 1:
                 all_clf_logits, all_clf_labels = torch.cat(all_clf_logits), torch.cat(all_clf_labels)
@@ -84,7 +88,7 @@ class Tau3MuGNNs:
             if epoch % self.config['eval']['test_interval'] == 0:
                 valid_res = self.run_one_epoch(self.data_loaders['valid'], epoch, 'valid')
                 test_res = self.run_one_epoch(self.data_loaders['test'], epoch, 'test')
-                if valid_res[-1] > best_val_recall:
+                if valid_res[-1] >= best_val_recall:
                     best_val_recall, best_test_recall, best_epoch = valid_res[-1], test_res[-1], epoch
 
             self.writer.add_scalar('best/best_epoch', best_epoch, epoch)
@@ -96,8 +100,8 @@ class Tau3MuGNNs:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Train Tau3MuGNNs')
-    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN-full-dR-1-mix-debug')
-    parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=6)
+    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN-full-dR-2-mix-debug35')
+    parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=5)
     args = parser.parse_args()
     setting = args.setting
     cuda_id = args.cuda

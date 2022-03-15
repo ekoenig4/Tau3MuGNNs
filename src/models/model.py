@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import InstanceNorm, LayerNorm, GraphNorm, global_mean_pool
+from torch_geometric.nn import InstanceNorm, LayerNorm, GraphNorm, global_mean_pool, global_add_pool
 
 from .gen_conv import GENConv
 
@@ -48,7 +48,7 @@ class Model(nn.Module):
 
         self.fc_out = nn.Linear(self.out_channels, 1)
 
-    def forward(self, x, edge_index, edge_attr, batch, data, edge_atten=None):
+    def forward(self, x, edge_index, edge_attr, batch, data, edge_atten=None, node_atten=None):
         v_idx, v_emb = (data.ptr[1:] - 1, []) if self.virtual_node else (None, None)
         x = self.node_encoder(x)
         edge_attr = self.edge_encoder(edge_attr)
@@ -57,6 +57,8 @@ class Model(nn.Module):
             edge_attr = self.bn_edge_feature(edge_attr)
 
         for i in range(self.n_layers):
+            if node_atten is not None:
+                x = node_atten * x
             identity = x
 
             x = self.convs[i](x, edge_index, edge_attr=edge_attr, edge_atten=edge_atten)
@@ -70,6 +72,8 @@ class Model(nn.Module):
                 elif self.readout == 'jknet':
                     v_emb.append(x[v_idx])
             x += identity
+
+
 
         if self.virtual_node:
             if self.readout == 'lstm':
@@ -85,7 +89,7 @@ class Model(nn.Module):
         out = self.fc_out(pool_out)
         return out
 
-    def get_emb(self, x, edge_index, edge_attr, batch, data, edge_atten=None):
+    def get_emb(self, x, edge_index, edge_attr, batch, data):
         v_idx, v_emb = (data.ptr[1:] - 1, []) if self.virtual_node else (None, None)
         x = self.node_encoder(x)
         edge_attr = self.edge_encoder(edge_attr)
@@ -96,7 +100,7 @@ class Model(nn.Module):
         for i in range(self.n_layers):
             identity = x
 
-            x = self.convs[i](x, edge_index, edge_attr=edge_attr, edge_atten=edge_atten)
+            x = self.convs[i](x, edge_index, edge_attr=edge_attr)
             x = self.mlps[i](x, batch)
 
             if self.virtual_node:

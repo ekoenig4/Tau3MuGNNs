@@ -9,7 +9,7 @@ data:
     test: 0.15
   pos_neg_ratio: 0.3
   radius: 1.0
-  virtual_node: True
+  virtual_node: False
   filter_soft_mu: True
 
   conditions:
