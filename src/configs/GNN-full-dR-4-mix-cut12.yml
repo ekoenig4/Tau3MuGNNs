@@ -10,10 +10,11 @@ data:
   pos_neg_ratio: 0.3
   radius: 1.0
   virtual_node: True
-  filter_soft_mu: True
+  filter: # on samples
+    cut: 'cut1+2'
 
-  conditions:
-    1-mu_hit_station: '<=2'
+  conditions: # on hits
+    1-mu_hit_station: '<=4'
     2-mu_hit_neighbor: '==0'
 
   node_feature_names:
@@ -44,6 +45,6 @@ optimizer:
   lr: 1.0e-3
   batch_size: 256
   epochs: 500
-  focal_loss: False
+  focal_loss: True
   focal_alpha: 0.8
   focal_gamma: 5

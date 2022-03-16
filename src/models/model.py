@@ -73,8 +73,6 @@ class Model(nn.Module):
                     v_emb.append(x[v_idx])
             x += identity
 
-
-
         if self.virtual_node:
             if self.readout == 'lstm':
                 pool_out = hx

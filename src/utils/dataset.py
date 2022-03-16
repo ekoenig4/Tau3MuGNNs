@@ -39,7 +39,7 @@ class Tau3MuDataset(InMemoryDataset):
         self.radius = data_config.get('radius', False)
         self.virtual_node = data_config.get('virtual_node', False)
         self.augdR = data_config.get('augdR', False)
-        self.filter_soft_mu = data_config.get('filter_soft_mu', False)
+        self.filter = data_config.get('filter', False)
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
         self.data, self.slices, self.idx_split = torch.load(self.processed_paths[0])
@@ -134,21 +134,17 @@ class Tau3MuDataset(InMemoryDataset):
             if pos0 is not None:
                 pos0 = pos0[pos0.n_gen_tau == 1].reset_index(drop=True)
 
-        if self.filter_soft_mu:
-            pos200 = pos200[pos200.apply(lambda x: Tau3MuDataset.filter_mu_by_pt_eta(x), axis=1)].reset_index(drop=True)
+        if self.filter:
+            pos200 = pos200[pos200.apply(lambda x: self.filter_samples(x), axis=1)].reset_index(drop=True)
             if pos0 is not None:
-                pos0 = pos0[pos0.apply(lambda x: Tau3MuDataset.filter_mu_by_pt_eta(x), axis=1)].reset_index(drop=True)
+                pos0 = pos0[pos0.apply(lambda x: self.filter_samples(x), axis=1)].reset_index(drop=True)
 
         if pos0 is not None and len(pos0) > 100000:
             print('[INFO] Sampling from pos0 to fasten processing & training...')
             pos0 = pos0.sample(100000).reset_index(drop=True)
 
         if 'mix' in self.setting:
-            if 'check' in self.setting:
-                pos, _ = self.mix(pos0, neg200)
-                neg = pos200
-            else:
-                pos, neg = self.mix(pos0, neg200)
+            pos, neg = self.mix(pos0, neg200, pos200, self.setting)
         else:
             pos, neg = pos200, neg200
 
@@ -162,22 +158,31 @@ class Tau3MuDataset(InMemoryDataset):
         assert self.pos_neg_ratio >= min_pos_neg_ratio, f'min_pos_neg_ratio = {min_pos_neg_ratio}! Now pos_neg_ratio = {self.pos_neg_ratio}!'
         return pd.concat((pos, neg), join='outer', ignore_index=True)
 
-    @staticmethod
-    def filter_mu_by_pt_eta(x):
-        # p = np.sqrt(x['gen_mu_e']**2 - 0.1057**2 + 1e-5)
-        # pt = x['gen_mu_pt']
-        # abs_eta = np.abs(x['gen_mu_eta'])
-        return ((x['mu_hit_station'] <= 2).sum() >= 3) and ((x['mu_hit_station'] <= 2).sum() <= 10)
-        # return ((p > 2.5).sum() == 3) and ((pt > 0.5).sum() == 3) and ((abs_eta < 2.8).sum() == 3) and ((x['mu_hit_station'] <= 2).sum() > 0)
-        # return ((x['mu_hit_station'] <= 2).sum() >= 2)
-        # return ((x['mu_hit_station'] <= 4).sum() >= 1)  # good-4
-        # return ((x['mu_hit_station'] == 1).sum() >= 3)  # bad-1
-        # return ((x['mu_hit_station'] <= 1).sum() >= 1)  # bad-1
-        # return ((x['mu_hit_station'] <= 2).sum() >= 0)  # good-2 bad-1
-        # return ((x['mu_hit_station'] <= 2).sum() >= 1)  # good
-        # return ((x['mu_hit_station'] <= 2).sum() >= 3)  # good
-        # return ((x['gen_mu_pt'] > 0.5).sum() == 3)
-        # return ((x['gen_mu_pt'] > 0.5).sum() == 3) and ((abs(x['gen_mu_eta']) < 2.8).sum() == 3) and ((abs(x['gen_mu_eta']) > 1.2).sum() == 3)  # good
+    def filter_samples(self, x):
+        p = np.sqrt(x['gen_mu_e']**2 - 0.1057**2 + 1e-5)
+        pt = x['gen_mu_pt']
+        abs_eta = np.abs(x['gen_mu_eta'])
+
+        cut_1 = ((p > 2.5).sum() == 3) and ((pt > 0.5).sum() == 3) and ((abs_eta < 2.8).sum() == 3)
+        cut_2 = ((pt > 2.0).sum() >= 1) and ((abs_eta < 2.4).sum() >= 1)
+
+        filter_res = True
+        if 'cut' in self.filter:
+            if self.filter['cut'] == 'cut1':
+                filter_res *= cut_1
+            elif self.filter['cut'] == 'cut1+2':
+                filter_res *= cut_1 * cut_2
+            else:
+                raise ValueError(f'Unknown filter cut: {self.filter["cut"]}')
+
+        if 'num_hits' in self.filter:
+            mask = np.ones(x['n_mu_hit'], dtype=bool)
+            for k, v in self.conditions.items():
+                k = k.split('-')[1]
+                mask *= eval(f'x["{k}"] {v}')
+            filter_res *= eval('mask.sum()' + self.filter['num_hits'])
+
+        return filter_res
 
     @staticmethod
     def get_intra_station_edges(entry, hit_id, radius):
@@ -304,13 +309,13 @@ class Tau3MuDataset(InMemoryDataset):
                 'test': np.concatenate((pos_test_idx, neg_test_idx)).tolist()}
 
     @staticmethod
-    def mix(pos0, neg200):
+    def mix(pos0, neg200, pos200, setting):
         neg_idx = np.arange(len(neg200))
         np.random.shuffle(neg_idx)
 
         # first len(pos0) neg data will be used as noise in pos0
         noise_in_pos0 = neg200.loc[neg_idx[:len(pos0)]].reset_index(drop=True)
-        # rest neg data will remain negative
+        # remaining neg data will remain negative
         neg200 = neg200.loc[neg_idx[len(pos0):]].reset_index(drop=True)
 
         print('[INFO] Mixing data...')
@@ -330,7 +335,13 @@ class Tau3MuDataset(InMemoryDataset):
                     entry[k] = mixed_hits
             mixed_pos.append(entry.values)
         mixed_pos = pd.DataFrame(data=mixed_pos, columns=entry.index)
-        return mixed_pos, neg200
+
+        if 'check' in setting:
+            return mixed_pos, pos200
+        elif 'sanity' in setting:
+            return noise_in_pos0, neg200
+        else:
+            return mixed_pos, neg200
 
     @staticmethod
     def split_endcap(masked_entry):

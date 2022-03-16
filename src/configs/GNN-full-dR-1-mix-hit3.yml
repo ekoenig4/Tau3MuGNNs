@@ -10,8 +10,10 @@ data:
   pos_neg_ratio: 0.3
   radius: 1.0
   virtual_node: True
+  filter: # on samples
+    num_hits: '>=3'
 
-  conditions:
+  conditions: # on hits
     1-mu_hit_station: '==1'
     2-mu_hit_neighbor: '==0'
 

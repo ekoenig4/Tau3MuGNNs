@@ -11,8 +11,8 @@ data:
   radius: 1.0
   virtual_node: True
 
-  conditions:
-    1-mu_hit_station: '==1'
+  conditions: # on hits
+    1-mu_hit_station: '<=4'
     2-mu_hit_neighbor: '==0'
 
   node_feature_names:
