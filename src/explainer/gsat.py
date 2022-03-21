@@ -2,12 +2,12 @@ import torch
 import torch.nn as nn
 from torch_sparse import transpose
 from torch_geometric.utils import is_undirected
-from torch_geometric.nn import InstanceNorm
+from torch_geometric.nn import InstanceNorm, BatchNorm
 
 
 class GSAT(nn.Module):
 
-    def __init__(self, clf, extractor, criterion, optimizer, learn_edge_att=True, final_r=0.7, decay_interval=10, decay_r=0.1, init_r=0.9):
+    def __init__(self, clf, extractor, criterion, optimizer, warmup_epochs=0, learn_edge_att=True, final_r=0.7, decay_interval=10, decay_r=0.1, init_r=0.9):
         super().__init__()
         self.clf = clf
         self.extractor = extractor
@@ -15,6 +15,7 @@ class GSAT(nn.Module):
         self.optimizer = optimizer
         self.device = next(self.parameters()).device
 
+        self.warmup_epochs = warmup_epochs
         self.learn_edge_att = learn_edge_att
         self.final_r = final_r
         self.decay_interval = decay_interval
@@ -24,29 +25,39 @@ class GSAT(nn.Module):
     def __loss__(self, att, clf_logits, clf_labels, epoch):
         pred_loss, _ = self.criterion(clf_logits.sigmoid(), clf_labels)
 
-        r = self.get_r(self.decay_interval, self.decay_r, epoch, final_r=self.final_r, init_r=self.init_r)
-        info_loss = (att * torch.log(att/r + 1e-6) + (1-att) * torch.log((1-att)/(1-r+1e-6) + 1e-6)).mean()
+        if epoch >= self.warmup_epochs:
+            r = self.get_r(self.decay_interval, self.decay_r, epoch, final_r=self.final_r, init_r=self.init_r)
+            info_loss = (att * torch.log(att/r + 1e-6) + (1-att) * torch.log((1-att)/(1-r+1e-6) + 1e-6)).mean()
+        else:
+            info_loss = torch.zeros_like(pred_loss)
 
-        loss = pred_loss + info_loss
+        loss = pred_loss + 1 * info_loss
         loss_dict = {'total': loss.item(), 'pred': pred_loss.item(), 'info': info_loss.item()}
         return loss, loss_dict
 
     def forward_pass(self, data, epoch, training):
-        emb = self.clf.get_emb(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr, data=data)
-        att_log_logits = self.extractor(emb, data.edge_index, data.batch)
-        att = self.sampling(att_log_logits, training)
+        if epoch >= self.warmup_epochs:
+            emb = self.clf.get_emb(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr, data=data)
+            att_log_logits = self.extractor(emb, data.edge_index, data.batch)
+            att = self.sampling(att_log_logits, training)
 
-        if self.learn_edge_att:
-            if is_undirected(data.edge_index):
-                nodesize = data.x.shape[0]
-                edge_att = (att + transpose(data.edge_index, att, nodesize, nodesize)[1]) / 2
+            if self.learn_edge_att:
+                if is_undirected(data.edge_index):
+                    nodesize = data.x.shape[0]
+                    edge_att = (att + transpose(data.edge_index, att, nodesize, nodesize)[1]) / 2
+                else:
+                    edge_att = att
             else:
-                edge_att = att
-        else:
-            edge_att = self.lift_node_att_to_edge_att(att, data.edge_index)
+                edge_att = self.lift_node_att_to_edge_att(att, data.edge_index)
 
-        clf_logits = self.clf(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr, data=data, edge_atten=edge_att, node_atten=att)
-        loss, loss_dict = self.__loss__(att, clf_logits, data.y, epoch)
+            clf_logits = self.clf(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr, data=data, edge_atten=edge_att, node_atten=att)
+            loss, loss_dict = self.__loss__(att, clf_logits, data.y, epoch)
+
+        else:
+            clf_logits = self.clf(data.x, data.edge_index, batch=data.batch, edge_attr=data.edge_attr, data=data)
+            loss, loss_dict = self.__loss__(None, clf_logits, data.y, epoch)
+            edge_att = torch.full((data.edge_attr.shape[0], 1), -1.0)
+            att = torch.full((data.x.shape[0], 1), -1.0)
         return edge_att, loss, loss_dict, clf_logits, att
 
     @staticmethod

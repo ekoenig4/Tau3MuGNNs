@@ -24,7 +24,7 @@ class Tau3MuGNNs:
         optimizer = torch.optim.AdamW(list(extractor.parameters()) + list(clf.parameters()), lr=config['optimizer']['lr'])
         criterion = Criterion(config['optimizer'])
 
-        self.gsat = GSAT(clf, extractor, criterion, optimizer, learn_edge_att=False, final_r=0.3, decay_interval=10, init_r=0.8)
+        self.gsat = GSAT(clf, extractor, criterion, optimizer, learn_edge_att=False, final_r=0.7, decay_interval=10, init_r=0.7, warmup_epochs=0)
         print(f'[INFO] Number of trainable parameters: {sum(p.numel() for p in self.gsat.parameters())}')
 
     @torch.no_grad()
@@ -100,8 +100,8 @@ class Tau3MuGNNs:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Train Tau3MuGNNs')
-    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN-full-dR-2-mix-debug35')
-    parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=5)
+    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN-full-dR-2-mix-x-debug')
+    parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=7)
     args = parser.parse_args()
     setting = args.setting
     cuda_id = args.cuda

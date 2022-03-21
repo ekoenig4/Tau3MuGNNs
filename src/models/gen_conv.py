@@ -24,7 +24,7 @@ class GENConv(MessagePassing):
         self.aggr = aggr
         self.eps = eps
 
-        assert aggr in ['softmax', 'softmax_sg', 'power', 'mean', 'max']
+        assert aggr in ['softmax', 'softmax_sg', 'power', 'mean', 'max', 'sum']
 
         self.initial_t = t
         self.initial_p = p
@@ -87,6 +87,10 @@ class GENConv(MessagePassing):
         elif self.aggr == 'mean':
             return scatter(inputs, index, dim=self.node_dim,
                            dim_size=dim_size, reduce='mean')
+
+        elif self.aggr == 'sum':
+            return scatter(inputs, index, dim=self.node_dim,
+                           dim_size=dim_size, reduce='sum')
 
         elif self.aggr == 'softmax_sg':
             out = scatter_softmax(inputs * self.t, index,

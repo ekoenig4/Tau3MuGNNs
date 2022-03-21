@@ -65,12 +65,12 @@ def log_epoch(epoch, phase, loss_dict, clf_logits, clf_labels, batch, writer=Non
     fig = PlotCM(confusion_matrix=cm, display_labels=['Neg', 'Pos']).plot(cmap=plt.cm.Blues).figure_
     writer.add_figure(f'Confusion Matrix - max_fpr_over_10/{phase}', fig, epoch)
 
-    desc += f'auroc: {auroc: .3f}, recall@maxfpr: {recall[indices[0]]: .3f}'
+    desc += f'auroc: {auroc:.3f}, recall@maxfpr: {recall[indices[0]]:.3f}'
 
-    if exp_probs is not None and exp_labels is not None and -1 not in exp_labels:
+    if exp_probs is not None and exp_labels is not None and -1 not in exp_labels and -1 not in exp_probs:
         exp_auroc = metrics.roc_auc_score(exp_labels, exp_probs)
         writer.add_scalar(f'{phase}/Exp_AUROC/', exp_auroc, epoch)
-        desc += f', exp_auroc: {exp_auroc: .3f}'
+        desc += f', exp_auroc: {exp_auroc:.3f}'
 
         bkg_att_weights = exp_probs[exp_labels == 0]
         signal_att_weights = exp_probs[exp_labels == 1]
@@ -78,7 +78,7 @@ def log_epoch(epoch, phase, loss_dict, clf_logits, clf_labels, batch, writer=Non
         writer.add_histogram(f'{phase}/signal_att_weights', signal_att_weights, epoch)
         writer.add_scalar(f'{phase}/avg_bkg_att_weights/', bkg_att_weights.mean(), epoch)
         writer.add_scalar(f'{phase}/avg_signal_att_weights/', signal_att_weights.mean(), epoch)
-        desc += f', avg_bkg: {bkg_att_weights.mean(): .3f}, avg_signal: {signal_att_weights.mean(): .3f}'
+        desc += f', avg_bkg: {bkg_att_weights.mean():.3f}, avg_signal: {signal_att_weights.mean():.3f}'
 
     return desc, auroc, recall[indices[0]].item(), loss_dict['total']
 

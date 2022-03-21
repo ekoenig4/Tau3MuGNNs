@@ -76,21 +76,21 @@ class Tau3MuDataset(InMemoryDataset):
                 entry_signal_endcap, entry_nontau_endcap, entry_pos_endcap, entry_neg_endcap = Tau3MuDataset.split_endcap(masked_entry)
                 if entry_signal_endcap is None:  # negative samples
                     entry_pos_endcap['y'], entry_neg_endcap['y'] = 0, 0
-                    data_list.append(self.process_one_entry(entry_pos_endcap))
-                    data_list.append(self.process_one_entry(entry_neg_endcap))
+                    data_list.append(self._process_one_entry(entry_pos_endcap))
+                    data_list.append(self._process_one_entry(entry_neg_endcap))
                 else:  # positive samples
                     if 'check' in self.setting:
                         entry_nontau_endcap['y'] = 1
-                        data_list.append(self.process_one_entry(entry_nontau_endcap))
+                        data_list.append(self._process_one_entry(entry_nontau_endcap))
                     else:
                         entry_signal_endcap['y'] = 1
-                        data_list.append(self.process_one_entry(entry_signal_endcap))
+                        data_list.append(self._process_one_entry(entry_signal_endcap))
             elif 'DT' in self.setting:
-                data = self.process_one_entry(masked_entry)
+                data = self._process_one_entry(masked_entry)
                 data_list.append(data)
             else:
                 assert 'GNN-full' in self.setting
-                data = self.process_one_entry(masked_entry)
+                data = self._process_one_entry(masked_entry)
                 data_list.append(data)
 
         idx_split = Tau3MuDataset.get_idx_split(data_list, self.splits, self.pos_neg_ratio)
@@ -99,7 +99,7 @@ class Tau3MuDataset(InMemoryDataset):
         print('[INFO] Saving data.pt...')
         torch.save((data, slices, idx_split), self.processed_paths[0])
 
-    def process_one_entry(self, entry):
+    def _process_one_entry(self, entry):
         if 'GNN' in self.setting:
             edge_index = Tau3MuDataset.build_graph(entry, self.add_self_loops, self.radius, self.virtual_node)
             edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, self.edge_feature_names, self.virtual_node, self.augdR)
@@ -116,6 +116,27 @@ class Tau3MuDataset(InMemoryDataset):
         else:
             assert 'DT' in self.setting
             x = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node)
+            y = torch.tensor(entry['y']).float().view(-1, 1)
+            return Data(x=x, y=y)
+
+    @staticmethod
+    def process_one_entry(entry, setting, add_self_loops, radius, virtual_node, node_feature_names, edge_feature_names, augdR):
+        if 'GNN' in setting:
+            edge_index = Tau3MuDataset.build_graph(entry, add_self_loops, radius, virtual_node)
+            edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, edge_feature_names, virtual_node, augdR)
+            x = Tau3MuDataset.get_node_features(entry, node_feature_names, virtual_node)
+            y = torch.tensor(entry['y']).float().view(-1, 1)
+
+            node_label = None
+            if 'node_label' in entry:
+                if y.item() == 1:
+                    node_label = torch.tensor(entry['node_label']).float().view(-1, 1)
+                else:
+                    node_label = torch.zeros((x.shape[0], 1)).float() if not virtual_node else torch.zeros((x.shape[0] - 1, 1)).float()
+            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label)
+        else:
+            assert 'DT' in setting
+            x = Tau3MuDataset.get_node_features(entry, node_feature_names, virtual_node)
             y = torch.tensor(entry['y']).float().view(-1, 1)
             return Data(x=x, y=y)
 
@@ -180,7 +201,12 @@ class Tau3MuDataset(InMemoryDataset):
             for k, v in self.conditions.items():
                 k = k.split('-')[1]
                 mask *= eval(f'x["{k}"] {v}')
-            filter_res *= eval('mask.sum()' + self.filter['num_hits'])
+
+            if isinstance(self.filter['num_hits'], list):
+                for each_hit_filter in self.filter['num_hits']:
+                    filter_res *= eval('mask.sum()' + each_hit_filter)
+            else:
+                filter_res *= eval('mask.sum()' + self.filter['num_hits'])
 
         return filter_res
 
@@ -190,7 +216,11 @@ class Tau3MuDataset(InMemoryDataset):
             coors = Tau3MuDataset.get_coors_for_hits(entry, hit_id)
             if coors.shape[0] == 0:
                 return torch.tensor([]).reshape(2, -1)
-            return radius_graph(coors, r=radius, loop=False)
+            row, col = radius_graph(coors, r=radius, loop=False)  # node id starts from 0
+            hit_id = torch.tensor(hit_id)
+            row = hit_id[row]  # relabel row
+            col = hit_id[col]  # relabel col
+            return torch.stack([row, col], dim=0)
         else:
             return torch.tensor(list(permutations(hit_id, 2))).T
 
@@ -213,20 +243,23 @@ class Tau3MuDataset(InMemoryDataset):
         for hit_id in station2hitids.values():
             intra_station_edges.append(Tau3MuDataset.get_intra_station_edges(entry, hit_id, radius))
         intra_station_edges = torch.cat(intra_station_edges, dim=1) if len(intra_station_edges) != 0 else torch.tensor([]).reshape(2, -1)
+        # assert torch_geometric.utils.coalesce(intra_station_edges).shape == intra_station_edges.shape
 
         # We cannot simply iterate four stations since many samples do not hit all the four stations.
-        # Some samples may hit station [1, 2, 3], some may hit [1], and some may hit [1, 2, 4].
+        # Some samples may hit station [1, 2, 3], some may hit [1], and some may have hit [1, 2, 4].
         inter_station_edges = []
         ordered_station_ids = sorted(station2hitids.keys())
         for i in range(len(ordered_station_ids) - 1):
             station_0, station_1 = ordered_station_ids[i], ordered_station_ids[i + 1]
             inter_station_edges.append(Tau3MuDataset.get_inter_station_edges((station2hitids[station_0], station2hitids[station_1])))
         inter_station_edges = torch.cat(inter_station_edges, dim=1) if len(inter_station_edges) != 0 else torch.tensor([]).reshape(2, -1)
+        # assert torch_geometric.utils.coalesce(inter_station_edges).shape == inter_station_edges.shape
 
         virtual_node_id = entry['n_mu_hit']
         real_node_ids = [i for i in range(virtual_node_id)]
         virtual_edges = Tau3MuDataset.get_virtual_edges(virtual_node_id, real_node_ids)
         virtual_edges = torch.tensor(virtual_edges).T if len(virtual_edges) != 0 else torch.tensor([]).reshape(2, -1)
+        # assert torch_geometric.utils.coalesce(virtual_edges).shape == virtual_edges.shape
 
         if virtual_node:
             edge_index = torch.cat((intra_station_edges, inter_station_edges, virtual_edges), dim=1).long()
@@ -235,6 +268,7 @@ class Tau3MuDataset(InMemoryDataset):
 
         if add_self_loops and edge_index.shape != (0,):
             edge_index, _ = torch_geometric.utils.add_self_loops(edge_index)
+        # assert torch_geometric.utils.coalesce(edge_index).shape == edge_index.shape
         return edge_index
 
     @staticmethod

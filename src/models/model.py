@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch_geometric.nn import InstanceNorm, LayerNorm, GraphNorm, global_mean_pool, global_add_pool
+from torch_geometric.nn import InstanceNorm, LayerNorm, GraphNorm, global_mean_pool, global_add_pool, global_max_pool
 
 from .gen_conv import GENConv
 
@@ -52,13 +52,17 @@ class Model(nn.Module):
         v_idx, v_emb = (data.ptr[1:] - 1, []) if self.virtual_node else (None, None)
         x = self.node_encoder(x)
         edge_attr = self.edge_encoder(edge_attr)
+
+        if node_atten is not None:
+            assert edge_atten is not None
+            x = node_atten * x
+            edge_attr = edge_atten * edge_attr
+
         if self.bn_input:
             x = self.bn_node_feature(x)
             edge_attr = self.bn_edge_feature(edge_attr)
 
         for i in range(self.n_layers):
-            if node_atten is not None:
-                x = node_atten * x
             identity = x
 
             x = self.convs[i](x, edge_index, edge_attr=edge_attr, edge_atten=edge_atten)
@@ -72,6 +76,8 @@ class Model(nn.Module):
                 elif self.readout == 'jknet':
                     v_emb.append(x[v_idx])
             x += identity
+
+
 
         if self.virtual_node:
             if self.readout == 'lstm':
