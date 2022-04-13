@@ -6,6 +6,7 @@ Created on 2021/4/24
 @author: Siqi Miao
 """
 
+from nbformat import write
 import yaml
 import shutil
 from pathlib import Path
@@ -32,13 +33,11 @@ from tensorboard.compat.proto.summary_pb2 import Summary
 def log_epoch(epoch, phase, loss_dict, clf_logits, clf_labels, batch, writer=None, exp_probs=None, exp_labels=None):
     desc = f'[Epoch: {epoch}]: {phase}........., ' if batch else f'[Epoch: {epoch}]: {phase} finished, '
     for k, v in loss_dict.items():
-        if not batch:
+        if not batch and writer is not None:
             writer.add_scalar(f'{phase}/{k}', v, epoch)
         desc += f'{k}: {v:.3f}, '
     if batch:
         return desc
-    else:
-        assert writer is not None
 
     clf_probs = clf_logits.sigmoid()
 
@@ -47,38 +46,41 @@ def log_epoch(epoch, phase, loss_dict, clf_logits, clf_labels, batch, writer=Non
     fpr, recall, thres = metrics.roc_curve(clf_labels, clf_probs)
     indices = get_idx_for_interested_fpr(fpr, [0.001, 0.001/10])
 
-    writer.add_scalar(f'{phase}/AUROC/', auroc, epoch)
-    writer.add_scalar(f'{phase}/Partial_AUROC/', partial_auroc, epoch)
-    writer.add_scalar(f'{phase}/recall_on_max_fpr/', recall[indices[0]], epoch)
-    writer.add_scalar(f'{phase}/recall_on_max_fpr_over_10/', recall[indices[1]], epoch)
-    writer.add_roc_curve(f'ROC_Curve/{phase}', clf_labels, clf_probs, epoch)
-    writer.add_roc_curve(f'TriggerRate_Curve/{phase}', clf_labels, clf_probs, epoch, to_trigger_rate=True)
+    if writer is not None:
+        writer.add_scalar(f'{phase}/AUROC/', auroc, epoch)
+        writer.add_scalar(f'{phase}/Partial_AUROC/', partial_auroc, epoch)
+        writer.add_scalar(f'{phase}/recall_on_max_fpr/', recall[indices[0]], epoch)
+        writer.add_scalar(f'{phase}/recall_on_max_fpr_over_10/', recall[indices[1]], epoch)
+        writer.add_roc_curve(f'ROC_Curve/{phase}', clf_labels, clf_probs, epoch)
+        writer.add_roc_curve(f'TriggerRate_Curve/{phase}', clf_labels, clf_probs, epoch, to_trigger_rate=True)
 
     fig = PlotROC(fpr=fpr*31000, tpr=recall, roc_auc=auroc).plot().figure_  # kHz
-    writer.add_figure(f'TriggerRate/{phase}', fig, epoch)
+    if writer is not None: writer.add_figure(f'TriggerRate/{phase}', fig, epoch)
 
     cm = metrics.confusion_matrix(clf_labels, y_pred=clf_probs > thres[indices[0]], normalize=None)
     fig = PlotCM(confusion_matrix=cm, display_labels=['Neg', 'Pos']).plot(cmap=plt.cm.Blues).figure_
-    writer.add_figure(f'Confusion Matrix - max_fpr/{phase}', fig, epoch)
+    if writer is not None: writer.add_figure(f'Confusion Matrix - max_fpr/{phase}', fig, epoch)
 
     cm = metrics.confusion_matrix(clf_labels, y_pred=clf_probs > thres[indices[1]], normalize=None)
     fig = PlotCM(confusion_matrix=cm, display_labels=['Neg', 'Pos']).plot(cmap=plt.cm.Blues).figure_
-    writer.add_figure(f'Confusion Matrix - max_fpr_over_10/{phase}', fig, epoch)
+    if writer is not None: writer.add_figure(f'Confusion Matrix - max_fpr_over_10/{phase}', fig, epoch)
 
     desc += f'auroc: {auroc:.3f}, recall@maxfpr: {recall[indices[0]]:.3f}'
 
     if exp_probs is not None and exp_labels is not None and -1 not in exp_labels and -1 not in exp_probs:
         exp_auroc = metrics.roc_auc_score(exp_labels, exp_probs)
-        writer.add_scalar(f'{phase}/Exp_AUROC/', exp_auroc, epoch)
         desc += f', exp_auroc: {exp_auroc:.3f}'
 
         bkg_att_weights = exp_probs[exp_labels == 0]
         signal_att_weights = exp_probs[exp_labels == 1]
-        writer.add_histogram(f'{phase}/bkg_att_weights', bkg_att_weights, epoch)
-        writer.add_histogram(f'{phase}/signal_att_weights', signal_att_weights, epoch)
-        writer.add_scalar(f'{phase}/avg_bkg_att_weights/', bkg_att_weights.mean(), epoch)
-        writer.add_scalar(f'{phase}/avg_signal_att_weights/', signal_att_weights.mean(), epoch)
         desc += f', avg_bkg: {bkg_att_weights.mean():.3f}, avg_signal: {signal_att_weights.mean():.3f}'
+
+        if writer is not None:
+            writer.add_scalar(f'{phase}/Exp_AUROC/', exp_auroc, epoch)
+            writer.add_histogram(f'{phase}/bkg_att_weights', bkg_att_weights, epoch)
+            writer.add_histogram(f'{phase}/signal_att_weights', signal_att_weights, epoch)
+            writer.add_scalar(f'{phase}/avg_bkg_att_weights/', bkg_att_weights.mean(), epoch)
+            writer.add_scalar(f'{phase}/avg_signal_att_weights/', signal_att_weights.mean(), epoch)
 
     return desc, auroc, recall[indices[0]].item(), loss_dict['total']
 

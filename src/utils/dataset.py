@@ -42,7 +42,7 @@ class Tau3MuDataset(InMemoryDataset):
         self.filter = data_config.get('filter', False)
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
-        self.data, self.slices, self.idx_split = torch.load(self.processed_paths[0])
+        self.data, self.slices, self.idx_split, self.df = torch.load(self.processed_paths[0])
         self.x_dim = self.data.x.shape[-1]
         self.edge_attr_dim = self.data.edge_attr.shape[-1] if self.edge_feature_names else 0
         print_splits(self)
@@ -97,7 +97,7 @@ class Tau3MuDataset(InMemoryDataset):
         data, slices = self.collate(data_list)
 
         print('[INFO] Saving data.pt...')
-        torch.save((data, slices, idx_split), self.processed_paths[0])
+        torch.save((data, slices, idx_split, df), self.processed_paths[0])
 
     def _process_one_entry(self, entry):
         if 'GNN' in self.setting:

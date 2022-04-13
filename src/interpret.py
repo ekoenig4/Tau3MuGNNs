@@ -100,8 +100,8 @@ class Tau3MuGNNs:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Train Tau3MuGNNs')
-    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN-full-dR-2-mix-x-debug')
-    parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=7)
+    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN-full-dR-2-mix-x')
+    parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=0)
     args = parser.parse_args()
     setting = args.setting
     cuda_id = args.cuda
@@ -119,6 +119,6 @@ def main():
 
 
 if __name__ == '__main__':
-    # import os
-    # os.chdir('./src')
+    import os
+    os.chdir('./src')
     main()
