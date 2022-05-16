@@ -29,3 +29,10 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
+
+def add_cuts_to_config(config, cut_id):
+    if cut_id is None:
+        return config
+    config['data']['cut'] = f'{cut_id}'
+    return config

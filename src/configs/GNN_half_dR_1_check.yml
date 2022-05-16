@@ -7,15 +7,14 @@ data:
     train: 0.7
     valid: 0.15
     test: 0.15
-  pos_neg_ratio: 0.3
+  pos_neg_ratio: 0.2
   radius: 1.0
   virtual_node: True
-  filter: # on samples
-    cut: 'cut1'
 
-  conditions: # on hits
-    1-mu_hit_station: '<=2'
+  conditions:
+    1-mu_hit_station: '==1'
     2-mu_hit_neighbor: '==0'
+    3-mu_hit_type: '!=0'
 
   node_feature_names:
     - mu_hit_sim_z

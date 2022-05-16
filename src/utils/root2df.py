@@ -17,7 +17,7 @@ class Root2Df(object):
         self.set_config()
 
     def set_config(self):
-        print(f"[INFO] Reading skim configuration file: {self.config_file}")
+        print(f"[INFO] Reading configuration file: {self.config_file}")
         cfgparser = configparser.ConfigParser()
         cfgparser.read(self.config_file)
 

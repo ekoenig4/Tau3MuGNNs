@@ -1,3 +1,4 @@
+import shutil
 import torch
 import yaml
 from datetime import datetime
@@ -5,7 +6,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 from models import Model
-from utils import Criterion, Writer, log_epoch, load_checkpoint, save_checkpoint, set_seed, get_data_loaders
+from utils import Criterion, Writer, log_epoch, load_checkpoint, save_checkpoint, set_seed, get_data_loaders, add_cuts_to_config
 
 
 class Tau3MuGNNs:
@@ -91,21 +92,28 @@ class Tau3MuGNNs:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Train Tau3MuGNNs')
-    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN-full-dR-1')
-    parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=7)
+    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN_full_dR_1')
+    parser.add_argument('--cut', type=str, help='cut id', default=None)
+    parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=3)
     args = parser.parse_args()
     setting = args.setting
     cuda_id = args.cuda
-    print(f'[INFO] Running {setting} on cuda {cuda_id}')
+    cut_id = args.cut
+    print(f'[INFO] Running {setting} on cuda {cuda_id} with cut {cut_id}')
 
     torch.set_num_threads(5)
     set_seed(42)
-    time = datetime.now().strftime("%m_%d_%Y-%H_%M_%S")
+    time = datetime.now().strftime("%m_%d_%Y_%H_%M_%S")
     config = yaml.safe_load(Path(f'./configs/{setting}.yml').open('r'))
+    config = add_cuts_to_config(config, cut_id)
     device = torch.device(f'cuda:{cuda_id}' if cuda_id >= 0 else 'cpu')
-    log_name = f'{time}-{setting}' if not config['optimizer']['resume'] else config['optimizer']['resume']
+
+    log_cut_name = '' if cut_id is None else f'-{cut_id}'
+    log_name = f'{time}-{setting}{log_cut_name}' if not config['optimizer']['resume'] else config['optimizer']['resume']
 
     log_path = Path(config['data']['log_dir']) / log_name
+    shutil.copy(f'./configs/{setting}.yml', log_path / 'config.yml')
+
     Tau3MuGNNs(config, device, log_path, setting).train()
 
 
