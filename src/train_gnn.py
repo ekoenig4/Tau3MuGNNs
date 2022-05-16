@@ -92,7 +92,7 @@ class Tau3MuGNNs:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description='Train Tau3MuGNNs')
-    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN_full_dR_1')
+    parser.add_argument('--setting', type=str, help='experiment settings', default='GNN_full_dR_2')
     parser.add_argument('--cut', type=str, help='cut id', default=None)
     parser.add_argument('--cuda', type=int, help='cuda device id, -1 for cpu', default=3)
     args = parser.parse_args()
@@ -112,6 +112,7 @@ def main():
     log_name = f'{time}-{setting}{log_cut_name}' if not config['optimizer']['resume'] else config['optimizer']['resume']
 
     log_path = Path(config['data']['log_dir']) / log_name
+    log_path.mkdir(parents=True, exist_ok=True)
     shutil.copy(f'./configs/{setting}.yml', log_path / 'config.yml')
 
     Tau3MuGNNs(config, device, log_path, setting).train()
