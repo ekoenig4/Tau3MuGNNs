@@ -65,7 +65,7 @@ pip install -r requirements.txt
 
 
 # Get the code
-The branch `master` branch is created by Daniel to process `.root` files. I use branch `gnn-siqi` to develop my models, and this branch contains the newest code. `check-siqi` is the branch with simplified code, which was trying to make the code more readable, but it is deprecated now.
+The branch `master` branch is created by Daniel to process `.root` files. I use branch `gnn-siqi` to develop my models, and this branch contains the latest code. `check-siqi` is the branch with simplified code, which was trying to make the code more readable, but it is deprecated now.
 
 To get the code, one can do:
 ```
@@ -77,36 +77,38 @@ git checkout gnn-siqi
 # Get the data
 To run the code, we need to put those `.pkl` files in the right place.
 
-Specifically, one has to put `DsTau3muPU0_MTD.pkl`, `DsTau3muPU200_MTD.pkl`, `MinBiasPU200_MTD.pkl` under `$ProjectDir/data/raw`. When running the code, those dataframes will be processed according to the specific setting, and the processed files will be saved under `$ProjectDir/data/processed_[setting]`. In this project, for simplicity I call `SingalPU0, SingalPU200, BkgPU200` as `pos0, pos200, neg200` respectively.
+Specifically, one has to put `DsTau3muPU0_MTD.pkl`, `DsTau3muPU200_MTD.pkl`, `MinBiasPU200_MTD.pkl` under `$ProjectDir/data/raw`. When running the code, those dataframes will be processed according to the specific setting, and the processed files will be saved under `$ProjectDir/data/processed-[setting]-[cut_id]`. In this project, for simplicity I call `SingalPU0, SingalPU200, BkgPU200` as `pos0, pos200, neg200` respectively.
 
 Please note that the processed files may take up lots of disk space (5 gigabytes+), and when processing them it may also take up lots of memory (10 gigabytes+).
 
 # Train a model
 To train a Decision Tree, one can refer to the `./src/decision_tree.ipynb` notebook.
 
-I provide `9` settings for training GNNs, and the corresponding configurations can be found in `$ProjectDir/src/configs/`. To train a GNN with a specific setting, one can do:
+I provide `8` settings for training GNNs, and the corresponding configurations can be found in `$ProjectDir/src/configs/`. To train a GNN with a specific setting, one can do:
 
 ```
 cd ./src
-python train_gnn.py --setting [setting_name] --cuda [GPU_id]
+python train_gnn.py --setting [setting_name] --cuda [GPU_id] --cut [cut_id]
 ```
 
-`GPU_id` is the id of the GPU to use. To use CPU, please set it to `-1`. The `setting_name` can be chosen from the following `9` settings:
+`GPU_id` is the id of the GPU to use. To use CPU, please set it to `-1`. `cut_id` is the id of the cut to use. Its default value is `None` and can be set to `cut1` or `cut1+2`. Note that when some cut is used, the `pos_neg_ratio` may need to be adjusted because many positive samples will be dropped.
+
+
+The `setting_name` can be chosen from the following settings:
 | setting_name | Description |
 | ------------ | ----------- |
-| GNN-full-dR-1 | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1 (current best setting)|
-| GNN-full-dR-2 | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1 & 2  |
-| GNN-full-dR-4 | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1 & 2 & 3 & 4  |
-| GNN-full-dR-1-augdR | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1; (4) augment edge features with dR |
-| GNN-full-FC-1 | (1) full detector; (2) construct fully-connected (complete) graphs; (3) use hits from station 1 |
-| GNN-full-dR-1-mix | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1; (4) positive samples: construct a sample by mixing signal hits from a SignalPU0 sample and background hits from a BkgPU200 sample, negative samples: BkgPU200 |
-| GNN-full-dR-1-mix-check | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1; (4) positive samples: construct a sample by mixing signal hits from a SignalPU0 sample and background hits from a BkgPU200 sample, negative samples: SignalPU200 |
-| GNN-half-dR-1 | (1) half detector; (2) construct graphs based on dR; (3) use hits from station 1 |
-| GNN-half-dR-1-check | (1) half detector; (2) construct graphs based on dR; (3) use hits from station 1; (4) positive samples: non-tau endcap in SignalPU200, negative samples: BkgPU200 (half detector) |
+| GNN_full_dR_1 | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1 (current best setting)|
+| GNN_full_dR_2 | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1 & 2  |
+| GNN_full_dR_4 | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1 & 2 & 3 & 4  |
+| GNN_full_FC_1 | (1) full detector; (2) construct fully-connected (complete) graphs; (3) use hits from station 1 |
+| GNN_full_dR_1_mix | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1; (4) positive samples: construct a sample by mixing signal hits from a SignalPU0 sample and background hits from a BkgPU200 sample, negative samples: BkgPU200 |
+| GNN_full_dR_1_mix_check | (1) full detector; (2) construct graphs based on dR; (3) use hits from station 1; (4) positive samples: construct a sample by mixing signal hits from a SignalPU0 sample and background hits from a BkgPU200 sample, negative samples: SignalPU200 |
+| GNN_half_dR_1 | (1) half detector; (2) construct graphs based on dR; (3) use hits from station 1 |
+| GNN_half_dR_1_check | (1) half detector; (2) construct graphs based on dR; (3) use hits from station 1; (4) positive samples: non-tau endcap in SignalPU200, negative samples: BkgPU200 (half detector) |
 
-We provide detailed documentation for each option in the setting in `./src/configs/GNN-full-dR-1.yml`. One can play with those options and try new settings.
+We provide detailed documentation for each option in the setting in `./src/configs/GNN_full_dR_1.yml`. One can play with those options and try new settings.
 
-One thing to notice is that if you have had processed files for a specific setting, even then you change some options in the config file, the processed files will not be changed in the next run. So, if you want to change the options in a config file, you need to delete the corresponding processed files first. This is because the code will search `.pt` files given the `setting_name`; if it finds any `.pt` files under `$ProjectDir/data/processed_[setting_name]`, it will assume that the processed files for the specified setting are already there and will not re-process data with the new options.
+One thing to notice is that if you have had processed files for a specific setting, even then you change some options in the config file, the processed files will not be changed in the next run. So, if you want to change the options in a config file, you need to delete the corresponding processed files first. This is because the code will search `.pt` files given the `setting_name`; if it finds any `.pt` files under `$ProjectDir/data/processed-[setting_name]-[cut_id]`, it will assume that the processed files for the specified setting are already there and will not re-process data with the new options.
 
 # Workflow of the code
 
@@ -114,7 +116,7 @@ One thing to notice is that if you have had processed files for a specific setti
 
 2. Then the model will be trained by the class `Tau3MuGNNs` in `train_gnn.py`, and during the training some metrics will show on the progress bar.
 
-3. The trained model will be saved into `$ProjectDir/data/logs/[TimeStep-setting_name]/model.pt`.
+3. The trained model will be saved into `$ProjectDir/data/logs/[time_step-setting_name-cut_id]/model.pt`, where `[time_step-setting_name-cut_id]` is the log id for this model and will be needed to load the model later.
 
 
 # Training Logs
@@ -129,6 +131,15 @@ unset PYTHONPATH
 tensorboard --logdir=$ProjectDir/data/logs --bind_all
 ```
 
+# Inference
+To save scores of each model configuration , we create a new folder `$ProjectDir/data/scores`. All inference scores will be saved here by running `./src/infer_gnn.ipynb`.
+
+The folder will contain multiple subfolders, one for each *data setting*. For example, `scores/full_raw_cut1` will be one folder, representing a dataset using full detector, raw data, and cut1; `scores/full_mix_cut1+2` would represent a dataset using full detector, mixed data, and cut1+2. Data using half dector has not been implemented yet.
+
+In each subfolder, say `scores/full_raw_cut1`, we will have a `full_raw_cut1.pkl` file for reference, which contains the raw features of the dataset (containing both positive and negative data). Then, we may have multiple score files, one for each *model setting*, where there are two columns: `sample_idx` and `probs`. For example, we may have `GNN_full_dR_1-scores.pkl`, which contains the scores of the model trained with the setting `GNN_full_dR_1`, and we may have another file, say `GNN_full_dR_4-scores.pkl` for a model trained with four stations.
+
+Finally, for each *data setting*, we can combine the results from `full_raw_cut1.pkl`, `GNN_full_dR_1-scores.pkl` and `GNN_full_dR_4-scores.pkl` to get a comprehensive score file containing all the scores and raw features. (The script for this is not provided, as it is just a couple of lines and can be done once needed.)
+
 
 # File Structure
 
@@ -137,24 +148,23 @@ tensorboard --logdir=$ProjectDir/data/logs --bind_all
 ├── data
 │   ├── logs                                # logs for training models
 │   ├── raw                                 # store raw .pkl files
-│   ├── processed_GNN-full-dR-1             # store processed files for each setting
-│   ├── processed_GNN-full-dR-2             # store processed files for each setting
+│   ├── scores                              # store inference scores
+│   ├── processed-GNN_full_dR_1-cut1        # store processed files for each setting
+│   ├── processed-GNN-full_dR_2-cut1+2      # store processed files for each setting
 │   └── ...
 ├── README.md
 ├── requirements.txt
 └── src
+    ├── train_gnn.py                        # train GNNs
+    ├── desicion_tree.ipynb                 # train a decision tree
     ├── configs                             # configs for different settings
-    │   ├── GNN-full-dR-1.yml
-    │   ├── GNN-full-dR-2.yml
+    │   ├── GNN_full_dR_1.yml
+    │   ├── GNN_full_dR_2.yml
     │   └── ...
-    ├── explainer                           # To explain GNNs, under development
-    │   └── [under development]
     ├── models
     │   ├── __init__.py
     │   ├── gen_conv.py                     # define GNN conv layers
     │   └── model.py                        # define GNN models
-    ├── train_gnn.py                        # training GNNs
-    ├── desicion_tree.ipynb                 # training a decision tree
     └── utils
         ├── __init__.py
         ├── dataset.py                      # dataset class

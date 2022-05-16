@@ -7,15 +7,14 @@ data:
     train: 0.7                   # Fraction of pos200 to use for training
     valid: 0.15                  # Fraction of pos200 to use for validation
     test: 0.15                   # Fraction of pos200 to use for testing
-  pos_neg_ratio: 0.3             # Ratio of positive to negative samples, e.g. pos200/neg200 = 0.2 in the training set
+  pos_neg_ratio: 0.2             # Ratio of positive to negative samples, e.g. pos200/neg200 = 0.2 in the training set
   radius: 1.0                    # dR value to use for constructing the graph for ecah sample
   virtual_node: True             # Add virtual nodes to the graph?
-  filter: # on samples
-    cut: 'cut1+2'
 
-  conditions: # on hits
-    1-mu_hit_station: '<=4'      # Only use muon hits from station 1. One can set '<=2' or '<=4' to include more stations
+  conditions:
+    1-mu_hit_station: '==1'      # Only use muon hits from station 1. One can set '<=2' or '<=4' to include more stations
     2-mu_hit_neighbor: '==0'
+    3-mu_hit_type: '!=0'
 
   node_feature_names:            # Node features to use
     - mu_hit_sim_z

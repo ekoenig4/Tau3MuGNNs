@@ -5,7 +5,6 @@ Created on 2021/4/14
 @author: Siqi Miao
 """
 
-import yaml
 import os.path as osp
 from pathlib import Path
 
@@ -38,8 +37,7 @@ class Tau3MuDataset(InMemoryDataset):
         self.pos_neg_ratio = data_config['pos_neg_ratio']
         self.radius = data_config.get('radius', False)
         self.virtual_node = data_config.get('virtual_node', False)
-        self.augdR = data_config.get('augdR', False)
-        self.filter = data_config.get('filter', False)
+        self.cut = data_config.get('cut', False)
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
         self.data, self.slices, self.idx_split, self.df = torch.load(self.processed_paths[0])
@@ -53,7 +51,8 @@ class Tau3MuDataset(InMemoryDataset):
 
     @property
     def processed_dir(self) -> str:
-        return osp.join(self.root, f'processed_{self.setting}')
+        cut_id = '-' + self.cut if self.cut else ''
+        return osp.join(self.root, f'processed-{self.setting}{cut_id}')
 
     @property
     def processed_file_names(self):
@@ -64,8 +63,7 @@ class Tau3MuDataset(InMemoryDataset):
         raise KeyboardInterrupt
 
     def process(self):
-        dfs = Root2Df(self.data_dir / 'raw').read_df(self.setting)
-        df = self.get_df(dfs)
+        df = self.get_df()
 
         data_list = []
         print('[INFO] Processing entries...')
@@ -89,7 +87,7 @@ class Tau3MuDataset(InMemoryDataset):
                 data = self._process_one_entry(masked_entry)
                 data_list.append(data)
             else:
-                assert 'GNN-full' in self.setting
+                assert 'GNN_full' in self.setting
                 data = self._process_one_entry(masked_entry)
                 data_list.append(data)
 
@@ -102,7 +100,7 @@ class Tau3MuDataset(InMemoryDataset):
     def _process_one_entry(self, entry):
         if 'GNN' in self.setting:
             edge_index = Tau3MuDataset.build_graph(entry, self.add_self_loops, self.radius, self.virtual_node)
-            edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, self.edge_feature_names, self.virtual_node, self.augdR)
+            edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, self.edge_feature_names, self.virtual_node)
             x = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node)
             y = torch.tensor(entry['y']).float().view(-1, 1)
 
@@ -112,50 +110,61 @@ class Tau3MuDataset(InMemoryDataset):
                     node_label = torch.tensor(entry['node_label']).float().view(-1, 1)
                 else:
                     node_label = torch.zeros((x.shape[0], 1)).float() if not self.virtual_node else torch.zeros((x.shape[0] - 1, 1)).float()
-            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label)
+            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label, sample_idx=entry['Index'])
         else:
             assert 'DT' in self.setting
             x = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node)
             y = torch.tensor(entry['y']).float().view(-1, 1)
-            return Data(x=x, y=y)
+            return Data(x=x, y=y, sample_idx=entry['Index'])
 
-    @staticmethod
-    def process_one_entry(entry, setting, add_self_loops, radius, virtual_node, node_feature_names, edge_feature_names, augdR):
-        if 'GNN' in setting:
-            edge_index = Tau3MuDataset.build_graph(entry, add_self_loops, radius, virtual_node)
-            edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, edge_feature_names, virtual_node, augdR)
-            x = Tau3MuDataset.get_node_features(entry, node_feature_names, virtual_node)
-            y = torch.tensor(entry['y']).float().view(-1, 1)
+    # @staticmethod
+    # def process_one_entry(entry, setting, add_self_loops, radius, virtual_node, node_feature_names, edge_feature_names):
+    #     if 'GNN' in setting:
+    #         edge_index = Tau3MuDataset.build_graph(entry, add_self_loops, radius, virtual_node)
+    #         edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, edge_feature_names, virtual_node)
+    #         x = Tau3MuDataset.get_node_features(entry, node_feature_names, virtual_node)
+    #         y = torch.tensor(entry['y']).float().view(-1, 1)
 
-            node_label = None
-            if 'node_label' in entry:
-                if y.item() == 1:
-                    node_label = torch.tensor(entry['node_label']).float().view(-1, 1)
-                else:
-                    node_label = torch.zeros((x.shape[0], 1)).float() if not virtual_node else torch.zeros((x.shape[0] - 1, 1)).float()
-            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label)
-        else:
-            assert 'DT' in setting
-            x = Tau3MuDataset.get_node_features(entry, node_feature_names, virtual_node)
-            y = torch.tensor(entry['y']).float().view(-1, 1)
-            return Data(x=x, y=y)
+    #         node_label = None
+    #         if 'node_label' in entry:
+    #             if y.item() == 1:
+    #                 node_label = torch.tensor(entry['node_label']).float().view(-1, 1)
+    #             else:
+    #                 node_label = torch.zeros((x.shape[0], 1)).float() if not virtual_node else torch.zeros((x.shape[0] - 1, 1)).float()
+    #         return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label)
+    #     else:
+    #         assert 'DT' in setting
+    #         x = Tau3MuDataset.get_node_features(entry, node_feature_names, virtual_node)
+    #         y = torch.tensor(entry['y']).float().view(-1, 1)
+    #         return Data(x=x, y=y)
 
-    def get_df(self, dfs):
-        for k, v in dfs.items():
-            for key in v.keys():
-                if 'gen' not in key and key not in self.node_feature_names and key not in self.edge_feature_names and key not in ['n_mu_hit', 'mu_hit_station', 'mu_hit_neighbor', 'mu_hit_endcap']:
-                    v.drop(key, inplace=True, axis=1)
+    def get_df_save_path(self):
+        save_name = ''
+        save_name += 'half_' if 'half' in self.setting else 'full_'
+        save_name += 'mix_' if 'mix' in self.setting else 'raw_'
+        save_name += self.cut if self.cut else 'nocut'
+        df_dir = self.data_dir / 'scores' / f'{save_name}'
+        df_dir.mkdir(parents=True, exist_ok=True)
+        return df_dir / f'{save_name}.pkl'
 
+    def get_df(self):
+        df_save_path = self.get_df_save_path()
+        if df_save_path.exists():
+            print(f'[INFO] Loading {df_save_path}...')
+            return pd.read_pickle(df_save_path)
+
+        dfs = Root2Df(self.data_dir / 'raw').read_df(self.setting)
         neg200 = dfs['MinBiasPU200_MTD']
         pos200 = dfs['DsTau3muPU200_MTD']
         pos0 = dfs.get('DsTau3muPU0_MTD', None)
 
+        assert self.only_one_tau
         if self.only_one_tau:
             pos200 = pos200[pos200.n_gen_tau == 1].reset_index(drop=True)
             if pos0 is not None:
                 pos0 = pos0[pos0.n_gen_tau == 1].reset_index(drop=True)
 
-        if self.filter:
+        if self.cut:
             pos200 = pos200[pos200.apply(lambda x: self.filter_samples(x), axis=1)].reset_index(drop=True)
             if pos0 is not None:
                 pos0 = pos0[pos0.apply(lambda x: self.filter_samples(x), axis=1)].reset_index(drop=True)
@@ -177,7 +186,11 @@ class Tau3MuDataset(InMemoryDataset):
 
         pos['y'], neg['y'] = 1, 0
         assert self.pos_neg_ratio >= min_pos_neg_ratio, f'min_pos_neg_ratio = {min_pos_neg_ratio}! Now pos_neg_ratio = {self.pos_neg_ratio}!'
-        return pd.concat((pos, neg), join='outer', ignore_index=True)
+
+        print(f'[INFO] Concatenating pos & neg, saving to {df_save_path}...')
+        df = pd.concat((pos, neg), join='outer', ignore_index=True)
+        df.to_pickle(df_save_path)
+        return df
 
     def filter_samples(self, x):
         p = np.sqrt(x['gen_mu_e']**2 - 0.1057**2 + 1e-5)
@@ -188,25 +201,33 @@ class Tau3MuDataset(InMemoryDataset):
         cut_2 = ((pt > 2.0).sum() >= 1) and ((abs_eta < 2.4).sum() >= 1)
 
         filter_res = True
-        if 'cut' in self.filter:
-            if self.filter['cut'] == 'cut1':
-                filter_res *= cut_1
-            elif self.filter['cut'] == 'cut1+2':
-                filter_res *= cut_1 * cut_2
-            else:
-                raise ValueError(f'Unknown filter cut: {self.filter["cut"]}')
+        if self.cut == 'cut1':
+            filter_res *= cut_1
+        elif self.cut == 'cut1+2':
+            filter_res *= cut_1 * cut_2
+        else:
+            raise ValueError(f'Unknown filter cut: {self.cut}')
 
-        if 'num_hits' in self.filter:
-            mask = np.ones(x['n_mu_hit'], dtype=bool)
-            for k, v in self.conditions.items():
-                k = k.split('-')[1]
-                mask *= eval(f'x["{k}"] {v}')
+        # filter_res = True
+        # if 'cut' in self.filter:
+        #     if self.filter['cut'] == 'cut1':
+        #         filter_res *= cut_1
+        #     elif self.filter['cut'] == 'cut1+2':
+        #         filter_res *= cut_1 * cut_2
+        #     else:
+        #         raise ValueError(f'Unknown filter cut: {self.filter["cut"]}')
 
-            if isinstance(self.filter['num_hits'], list):
-                for each_hit_filter in self.filter['num_hits']:
-                    filter_res *= eval('mask.sum()' + each_hit_filter)
-            else:
-                filter_res *= eval('mask.sum()' + self.filter['num_hits'])
+        # if 'num_hits' in self.filter:
+        #     mask = np.ones(x['n_mu_hit'], dtype=bool)
+        #     for k, v in self.conditions.items():
+        #         k = k.split('-')[1]
+        #         mask *= eval(f'x["{k}"] {v}')
+
+        #     if isinstance(self.filter['num_hits'], list):
+        #         for each_hit_filter in self.filter['num_hits']:
+        #             filter_res *= eval('mask.sum()' + each_hit_filter)
+        #     else:
+        #         filter_res *= eval('mask.sum()' + self.filter['num_hits'])
 
         return filter_res
 
@@ -295,7 +316,7 @@ class Tau3MuDataset(InMemoryDataset):
         return torch.tensor(features, dtype=torch.float)
 
     @staticmethod
-    def get_edge_features(entry, edge_index, feature_names, virtual_node, augdR):
+    def get_edge_features(entry, edge_index, feature_names, virtual_node):
         if edge_index.shape == (2, 0):
             return torch.tensor([])
 
@@ -307,17 +328,18 @@ class Tau3MuDataset(InMemoryDataset):
             features = np.concatenate((features, np.zeros((1, features.shape[1]))), axis=0)
 
         edge_features = features[edge_index[0]] - features[edge_index[1]]
-        if augdR:
-            eta, phi = entry['mu_hit_sim_eta'], np.deg2rad(entry['mu_hit_sim_phi'])
-            if virtual_node:
-                eta, phi = np.append(eta, 0), np.append(phi, 0)
-            dR = (eta[edge_index[0]] - eta[edge_index[1]])**2 + (phi[edge_index[0]] - phi[edge_index[1]])**2
-            dR = dR**0.5
-            edge_features = np.concatenate((edge_features, dR.reshape(-1, 1)), axis=1)
+        # if augdR:
+        #     eta, phi = entry['mu_hit_sim_eta'], np.deg2rad(entry['mu_hit_sim_phi'])
+        #     if virtual_node:
+        #         eta, phi = np.append(eta, 0), np.append(phi, 0)
+        #     dR = (eta[edge_index[0]] - eta[edge_index[1]])**2 + (phi[edge_index[0]] - phi[edge_index[1]])**2
+        #     dR = dR**0.5
+        #     edge_features = np.concatenate((edge_features, dR.reshape(-1, 1)), axis=1)
         return torch.tensor(edge_features, dtype=torch.float)
 
     @staticmethod
     def get_idx_split(data_list, splits, pos2neg):
+        np.random.seed(42)
         assert sum(splits.values()) == 1.0
         y_dist = np.array([data.y.item() for data in data_list])
 
