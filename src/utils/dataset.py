@@ -40,7 +40,7 @@ class Tau3MuDataset(InMemoryDataset):
         self.cut = data_config.get('cut', False)
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
-        self.data, self.slices, self.idx_split, self.df = torch.load(self.processed_paths[0])
+        self.data, self.slices, self.idx_split = torch.load(self.processed_paths[0])
         self.x_dim = self.data.x.shape[-1]
         self.edge_attr_dim = self.data.edge_attr.shape[-1] if self.edge_feature_names else 0
         print_splits(self)
@@ -71,18 +71,18 @@ class Tau3MuDataset(InMemoryDataset):
             masked_entry = Tau3MuDataset.mask_hits(entry, self.conditions)
 
             if 'half' in self.setting:
-                entry_signal_endcap, entry_nontau_endcap, entry_pos_endcap, entry_neg_endcap = Tau3MuDataset.split_endcap(masked_entry)
+                entry_signal_endcap, entry_nontau_endcap, entry_pos_endcap, entry_neg_endcap, entry_signal_endcap_id, entry_nontau_endcap_id = Tau3MuDataset.split_endcap(masked_entry)
                 if entry_signal_endcap is None:  # negative samples
                     entry_pos_endcap['y'], entry_neg_endcap['y'] = 0, 0
-                    data_list.append(self._process_one_entry(entry_pos_endcap))
-                    data_list.append(self._process_one_entry(entry_neg_endcap))
+                    data_list.append(self._process_one_entry(entry_pos_endcap, endcap=1))
+                    data_list.append(self._process_one_entry(entry_neg_endcap, endcap=-1))
                 else:  # positive samples
                     if 'check' in self.setting:
                         entry_nontau_endcap['y'] = 1
-                        data_list.append(self._process_one_entry(entry_nontau_endcap))
+                        data_list.append(self._process_one_entry(entry_nontau_endcap, endcap=entry_nontau_endcap_id))
                     else:
                         entry_signal_endcap['y'] = 1
-                        data_list.append(self._process_one_entry(entry_signal_endcap))
+                        data_list.append(self._process_one_entry(entry_signal_endcap, endcap=entry_signal_endcap_id))
             elif 'DT' in self.setting:
                 data = self._process_one_entry(masked_entry)
                 data_list.append(data)
@@ -95,9 +95,9 @@ class Tau3MuDataset(InMemoryDataset):
         data, slices = self.collate(data_list)
 
         print('[INFO] Saving data.pt...')
-        torch.save((data, slices, idx_split, df), self.processed_paths[0])
+        torch.save((data, slices, idx_split), self.processed_paths[0])
 
-    def _process_one_entry(self, entry):
+    def _process_one_entry(self, entry, endcap=0):
         if 'GNN' in self.setting:
             edge_index = Tau3MuDataset.build_graph(entry, self.add_self_loops, self.radius, self.virtual_node)
             edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, self.edge_feature_names, self.virtual_node)
@@ -110,7 +110,7 @@ class Tau3MuDataset(InMemoryDataset):
                     node_label = torch.tensor(entry['node_label']).float().view(-1, 1)
                 else:
                     node_label = torch.zeros((x.shape[0], 1)).float() if not self.virtual_node else torch.zeros((x.shape[0] - 1, 1)).float()
-            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label, sample_idx=entry['Index'])
+            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label, sample_idx=entry['Index'], endcap=endcap)
         else:
             assert 'DT' in self.setting
             x = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node)
@@ -140,7 +140,6 @@ class Tau3MuDataset(InMemoryDataset):
 
     def get_df_save_path(self):
         save_name = ''
-        save_name += 'half_' if 'half' in self.setting else 'full_'
         save_name += 'mix_' if 'mix' in self.setting else 'raw_'
         save_name += self.cut if self.cut else 'nocut'
         df_dir = self.data_dir / 'scores' / f'{save_name}'
@@ -421,12 +420,19 @@ class Tau3MuDataset(InMemoryDataset):
             if ((masked_entry['gen_tau_eta'] * entry_pos_endcap['mu_hit_sim_eta']) > 0).sum() == entry_pos_endcap['n_mu_hit']:
                 entry_signal_endcap = entry_pos_endcap
                 entry_nontau_endcap = entry_neg_endcap
+                entry_signal_endcap_id = 1
+                entry_nontau_endcap_id = -1
             else:
                 assert ((masked_entry['gen_tau_eta'] * entry_neg_endcap['mu_hit_sim_eta']) > 0).sum() == entry_neg_endcap['n_mu_hit']
                 entry_signal_endcap = entry_neg_endcap
                 entry_nontau_endcap = entry_pos_endcap
+                entry_signal_endcap_id = -1
+                entry_nontau_endcap_id = 1
+        else:
+            entry_signal_endcap_id = None
+            entry_nontau_endcap_id = None
 
-        return entry_signal_endcap, entry_nontau_endcap, entry_pos_endcap, entry_neg_endcap
+        return entry_signal_endcap, entry_nontau_endcap, entry_pos_endcap, entry_neg_endcap, entry_signal_endcap_id, entry_nontau_endcap_id
 
     @staticmethod
     def mask_hits(entry, conditions):
