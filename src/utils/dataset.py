@@ -445,7 +445,7 @@ class Tau3MuDataset(InMemoryDataset):
         masked_entry = {'n_mu_hit': mask.sum()}
         for k in entry._fields:
             value = getattr(entry, k)
-            if isinstance(value, np.ndarray) and 'gen' not in k and k != 'y':
+            if isinstance(value, np.ndarray) and 'gen' not in k and k != 'y' and 'L1' not in k:
                 assert value.shape[0] == entry.n_mu_hit
                 masked_entry[k] = value[mask].reshape(-1)
             else:
