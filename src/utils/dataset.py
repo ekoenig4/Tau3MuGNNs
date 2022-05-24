@@ -25,7 +25,7 @@ from torch_geometric.loader import DataLoader
 
 
 class Tau3MuDataset(InMemoryDataset):
-    def __init__(self, setting, data_config):
+    def __init__(self, setting, data_config, debug=False):
         self.setting = setting
         self.data_dir = Path(data_config['data_dir'])
         self.conditions = data_config['conditions']
@@ -38,6 +38,9 @@ class Tau3MuDataset(InMemoryDataset):
         self.radius = data_config.get('radius', False)
         self.virtual_node = data_config.get('virtual_node', False)
         self.cut = data_config.get('cut', False)
+
+        self.debug = debug
+        print(f'[INFO] Debug mode: {self.debug}')
 
         super(Tau3MuDataset, self).__init__(root=self.data_dir)
         self.data, self.slices, self.idx_split = torch.load(self.processed_paths[0])
@@ -64,6 +67,8 @@ class Tau3MuDataset(InMemoryDataset):
 
     def process(self):
         df = self.get_df()
+        if self.debug:
+            df = df.iloc[:100]
 
         data_list = []
         print('[INFO] Processing entries...')
@@ -80,9 +85,10 @@ class Tau3MuDataset(InMemoryDataset):
                     if 'check' in self.setting:
                         entry_nontau_endcap['y'] = 1
                         data_list.append(self._process_one_entry(entry_nontau_endcap, endcap=entry_nontau_endcap_id))
-                    else:
-                        entry_signal_endcap['y'] = 1
+                    else:  # half-detector, tau and non-tau endcap
+                        entry_signal_endcap['y'], entry_nontau_endcap['y'] = 1, 0
                         data_list.append(self._process_one_entry(entry_signal_endcap, endcap=entry_signal_endcap_id))
+                        data_list.append(self._process_one_entry(entry_nontau_endcap, endcap=entry_nontau_endcap_id, only_eval=True))  # only eval non-tau endcap of signalPU
             elif 'DT' in self.setting:
                 data = self._process_one_entry(masked_entry)
                 data_list.append(data)
@@ -97,7 +103,7 @@ class Tau3MuDataset(InMemoryDataset):
         print('[INFO] Saving data.pt...')
         torch.save((data, slices, idx_split), self.processed_paths[0])
 
-    def _process_one_entry(self, entry, endcap=0):
+    def _process_one_entry(self, entry, endcap=0, only_eval=False):
         if 'GNN' in self.setting:
             edge_index = Tau3MuDataset.build_graph(entry, self.add_self_loops, self.radius, self.virtual_node)
             edge_attr = Tau3MuDataset.get_edge_features(entry, edge_index, self.edge_feature_names, self.virtual_node)
@@ -110,7 +116,7 @@ class Tau3MuDataset(InMemoryDataset):
                     node_label = torch.tensor(entry['node_label']).float().view(-1, 1)
                 else:
                     node_label = torch.zeros((x.shape[0], 1)).float() if not self.virtual_node else torch.zeros((x.shape[0] - 1, 1)).float()
-            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label, sample_idx=entry['Index'], endcap=endcap)
+            return Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_attr, node_label=node_label, sample_idx=entry['Index'], endcap=endcap, only_eval=only_eval)
         else:
             assert 'DT' in self.setting
             x = Tau3MuDataset.get_node_features(entry, self.node_feature_names, self.virtual_node)
@@ -341,9 +347,12 @@ class Tau3MuDataset(InMemoryDataset):
         np.random.seed(42)
         assert sum(splits.values()) == 1.0
         y_dist = np.array([data.y.item() for data in data_list])
+        only_eval = np.array([data.only_eval for data in data_list])
 
-        pos_idx = np.argwhere(y_dist == 1).reshape(-1)
-        neg_idx = np.argwhere(y_dist == 0).reshape(-1)
+        pos_idx = np.argwhere((y_dist == 1) & (~only_eval)).reshape(-1)  # if is half-detector model, do not use non-tau endcap for training
+        neg_idx = np.argwhere((y_dist == 0) & (~only_eval)).reshape(-1)
+        only_eval_idx = np.argwhere(only_eval).reshape(-1)
+
         np.random.shuffle(pos_idx)
         np.random.shuffle(neg_idx)
 
@@ -361,7 +370,7 @@ class Tau3MuDataset(InMemoryDataset):
 
         return {'train': np.concatenate((pos_train_idx, neg_train_idx)).tolist(),
                 'valid': np.concatenate((pos_valid_idx, neg_valid_idx)).tolist(),
-                'test': np.concatenate((pos_test_idx, neg_test_idx)).tolist()}
+                'test': np.concatenate((pos_test_idx, neg_test_idx, only_eval_idx)).tolist()}
 
     @staticmethod
     def mix(pos0, neg200, pos200, setting):
