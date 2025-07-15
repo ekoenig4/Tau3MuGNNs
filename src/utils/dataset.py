@@ -50,7 +50,7 @@ class Tau3MuDataset(InMemoryDataset):
 
     @property
     def raw_file_names(self):
-        return ['DsTau3muPU0_MTD.pkl', 'DsTau3muPU200_MTD.pkl', 'MinBiasPU200_MTD.pkl'] if 'mix' in self.setting else ['DsTau3muPU200_MTD.pkl', 'MinBiasPU200_MTD.pkl']
+        return ['signal_PU0.pkl', 'signal.pkl', 'background.pkl'] if 'mix' in self.setting else ['signal.pkl', 'background.pkl']
 
     @property
     def processed_dir(self) -> str:
@@ -159,9 +159,9 @@ class Tau3MuDataset(InMemoryDataset):
             return pd.read_pickle(df_save_path)
 
         dfs = Root2Df(self.data_dir / 'raw').read_df(self.setting)
-        neg200 = dfs['MinBiasPU200_MTD']
-        pos200 = dfs['DsTau3muPU200_MTD']
-        pos0 = dfs.get('DsTau3muPU0_MTD', None)
+        neg200 = dfs['background']
+        pos200 = dfs['signal']
+        pos0 = dfs.get('signal_PU0', None)
 
         assert self.only_one_tau
         if self.only_one_tau:
@@ -199,7 +199,7 @@ class Tau3MuDataset(InMemoryDataset):
 
     def filter_samples(self, x):
         p = np.sqrt(x['gen_mu_e']**2 - 0.1057**2 + 1e-5)
-        pt = x['gen_mu_pt']
+        pt = x['gen_mu_pt'] 
         abs_eta = np.abs(x['gen_mu_eta'])
 
         cut_1 = ((p > 2.5).sum() == 3) and ((pt > 0.5).sum() == 3) and ((abs_eta < 2.8).sum() == 3)
@@ -223,7 +223,7 @@ class Tau3MuDataset(InMemoryDataset):
         #         raise ValueError(f'Unknown filter cut: {self.filter["cut"]}')
 
         # if 'num_hits' in self.filter:
-        #     mask = np.ones(x['n_mu_hit'], dtype=bool)
+        #     mask = np.ones(x['nstub'], dtype=bool)
         #     for k, v in self.conditions.items():
         #         k = k.split('-')[1]
         #         mask *= eval(f'x["{k}"] {v}')
@@ -257,13 +257,19 @@ class Tau3MuDataset(InMemoryDataset):
 
     @staticmethod
     def get_coors_for_hits(entry, hit_id):
-        eta, phi = entry['mu_hit_sim_eta'][hit_id], np.deg2rad(entry['mu_hit_sim_phi'])[hit_id]
+        # eta, phi = entry['stub_eta1'][hit_id], np.deg2rad(entry['stub_phi1'])[hit_id]
+        
+        ieta, iphi = entry['stub_eta1'][hit_id], entry['stub_phi1'][hit_id]
+        # Convert ieta, iphi to eta, phi
+        eta = ieta * 0.087
+        phi = iphi * np.pi / 512
+
         coors = torch.tensor(np.stack((eta, phi)).T)
         return coors
 
     @staticmethod
     def build_graph(entry, add_self_loops, radius, virtual_node):
-        station2hitids = Tau3MuDataset.groupby_station(entry['mu_hit_station'])
+        station2hitids = Tau3MuDataset.groupby_station(entry['stub_tfLayer'])
 
         intra_station_edges = []
         for hit_id in station2hitids.values():
@@ -281,7 +287,7 @@ class Tau3MuDataset(InMemoryDataset):
         inter_station_edges = torch.cat(inter_station_edges, dim=1) if len(inter_station_edges) != 0 else torch.tensor([]).reshape(2, -1)
         # assert torch_geometric.utils.coalesce(inter_station_edges).shape == inter_station_edges.shape
 
-        virtual_node_id = entry['n_mu_hit']
+        virtual_node_id = entry['nstub']
         real_node_ids = [i for i in range(virtual_node_id)]
         virtual_edges = Tau3MuDataset.get_virtual_edges(virtual_node_id, real_node_ids)
         virtual_edges = torch.tensor(virtual_edges).T if len(virtual_edges) != 0 else torch.tensor([]).reshape(2, -1)
@@ -312,7 +318,7 @@ class Tau3MuDataset(InMemoryDataset):
 
     @staticmethod
     def get_node_features(entry, feature_names, virtual_node):
-        if entry['n_mu_hit'] == 0:
+        if entry['nstub'] == 0:
             virtual_node = True
 
         features = np.stack([entry[feature] for feature in feature_names], axis=1)
@@ -334,7 +340,7 @@ class Tau3MuDataset(InMemoryDataset):
 
         edge_features = features[edge_index[0]] - features[edge_index[1]]
         # if augdR:
-        #     eta, phi = entry['mu_hit_sim_eta'], np.deg2rad(entry['mu_hit_sim_phi'])
+        #     eta, phi = entry['stub_eta1'], np.deg2rad(entry['stub_phi1'])
         #     if virtual_node:
         #         eta, phi = np.append(eta, 0), np.append(phi, 0)
         #     dR = (eta[edge_index[0]] - eta[edge_index[1]])**2 + (phi[edge_index[0]] - phi[edge_index[1]])**2
@@ -389,8 +395,8 @@ class Tau3MuDataset(InMemoryDataset):
             for k, v in entry.items():
                 if 'gen' in k:  # directly keep gen variables
                     continue
-                elif isinstance(v, int):  # accumulate n_mu_hit
-                    assert k == 'n_mu_hit'
+                elif isinstance(v, int):  # accumulate nstub
+                    assert k == 'nstub'
                     entry['node_label'] = np.concatenate((np.zeros(noise_in_pos0.iloc[idx][k]), np.ones(v)))
                     entry[k] += noise_in_pos0.iloc[idx][k]
                 else:  # concat hit features
@@ -410,29 +416,29 @@ class Tau3MuDataset(InMemoryDataset):
     @staticmethod
     def split_endcap(masked_entry):
         entry_pos_endcap, entry_neg_endcap = {}, {}
-        pos_endcap_idx = masked_entry['mu_hit_endcap'] == 1
-        neg_endcap_idx = masked_entry['mu_hit_endcap'] == -1
+        pos_endcap_idx = masked_entry['stub_isEndcap'] == 1
+        neg_endcap_idx = masked_entry['stub_isEndcap'] == -1
 
         for k, v in masked_entry.items():
             if isinstance(v, np.ndarray) and 'gen' not in k and k != 'y' and 'L1' not in k:
-                assert v.shape[0] == masked_entry['n_mu_hit']
+                assert v.shape[0] == masked_entry['nstub']
                 entry_pos_endcap[k] = v[pos_endcap_idx]
                 entry_neg_endcap[k] = v[neg_endcap_idx]
             else:
                 entry_pos_endcap[k] = v
                 entry_neg_endcap[k] = v
-        entry_pos_endcap['n_mu_hit'] = pos_endcap_idx.sum().item()
-        entry_neg_endcap['n_mu_hit'] = neg_endcap_idx.sum().item()
+        entry_pos_endcap['nstub'] = pos_endcap_idx.sum().item()
+        entry_neg_endcap['nstub'] = neg_endcap_idx.sum().item()
 
         entry_signal_endcap, entry_nontau_endcap = None, None
         if masked_entry['y'] == 1:
-            if ((masked_entry['gen_tau_eta'] * entry_pos_endcap['mu_hit_sim_eta']) > 0).sum() == entry_pos_endcap['n_mu_hit']:
+            if ((masked_entry['gen_tau_eta'] * entry_pos_endcap['stub_eta1']) > 0).sum() == entry_pos_endcap['nstub']:
                 entry_signal_endcap = entry_pos_endcap
                 entry_nontau_endcap = entry_neg_endcap
                 entry_signal_endcap_id = 1
                 entry_nontau_endcap_id = -1
             else:
-                assert ((masked_entry['gen_tau_eta'] * entry_neg_endcap['mu_hit_sim_eta']) > 0).sum() == entry_neg_endcap['n_mu_hit']
+                assert ((masked_entry['gen_tau_eta'] * entry_neg_endcap['stub_eta1']) > 0).sum() == entry_neg_endcap['nstub']
                 entry_signal_endcap = entry_neg_endcap
                 entry_nontau_endcap = entry_pos_endcap
                 entry_signal_endcap_id = -1
@@ -445,20 +451,20 @@ class Tau3MuDataset(InMemoryDataset):
 
     @staticmethod
     def mask_hits(entry, conditions):
-        mask = np.ones(entry.n_mu_hit, dtype=bool)
+        mask = np.ones(entry.nstub, dtype=bool)
         for k, v in conditions.items():
             k = k.split('-')[1]
             assert isinstance(getattr(entry, k), np.ndarray)
             mask *= eval('entry.' + k + v)
 
-        masked_entry = {'n_mu_hit': mask.sum()}
+        masked_entry = {'nstub': mask.sum()}
         for k in entry._fields:
             value = getattr(entry, k)
             if isinstance(value, np.ndarray) and 'gen' not in k and k != 'y' and 'L1' not in k:
-                assert value.shape[0] == entry.n_mu_hit
+                assert value.shape[0] == entry.nstub
                 masked_entry[k] = value[mask].reshape(-1)
             else:
-                if k != 'n_mu_hit':
+                if k != 'nstub':
                     masked_entry[k] = value
         return masked_entry
 

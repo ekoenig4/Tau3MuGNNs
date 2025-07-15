@@ -30,7 +30,8 @@ class Root2Df(object):
         print("[INFO] Transforming ROOT files into pickle files")
         # open dataset
         print(f"    ... Opening file in input directory using uproot: {samplename}")
-        events = uproot.open(samplename)['Ntuplizer/MuonTrackTree']
+        # events = uproot.open(samplename)['Ntuplizer/MuonTrackTree']
+        events = uproot.open(samplename)['Events']
 
         # transform file into a pandas dataframe
         print("    ... Processing file using pandas")
